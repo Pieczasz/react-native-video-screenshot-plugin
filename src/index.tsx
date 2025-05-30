@@ -224,6 +224,32 @@ export function getVideoDimensions(videoRef: VideoRef): Promise<{ width: number;
   return VideoScreenshotPlugin.getVideoDimensions(videoRef.videoId);
 }
 
+/**
+ * Lists all available video player instances
+ *
+ * @returns Promise resolving to array of video IDs
+ *
+ * @example
+ * ```typescript
+ * import { listAvailableVideos } from 'react-native-video-screenshot-plugin';
+ *
+ * const videoIds = await listAvailableVideos();
+ * console.log('Available videos:', videoIds);
+ * ```
+ */
+export function listAvailableVideos(): Promise<string[]> {
+  return VideoScreenshotPlugin.listAvailableVideos();
+}
+
+/**
+ * Debug method to list all registered players with detailed info
+ *
+ * @returns Promise resolving to array of player IDs
+ */
+export function debugListPlayers(): Promise<string[]> {
+  return VideoScreenshotPlugin.debugListPlayers();
+}
+
 // Types are already exported above, no need to re-export
 
 // Default export
@@ -233,4 +259,6 @@ export default {
   saveScreenshotToPath,
   isScreenshotSupported,
   getVideoDimensions,
+  listAvailableVideos,
+  debugListPlayers,
 };

@@ -21,8 +21,10 @@ import Video, {VideoRef} from 'react-native-video';
 import {
   captureScreenshot,
   saveScreenshotToPath,
+  saveScreenshotToLibrary,
   isScreenshotSupported,
   getVideoDimensions,
+  listAvailableVideos,
 } from 'react-native-video-screenshot-plugin';
 import RNFS from 'react-native-fs';
 
@@ -47,6 +49,7 @@ const SAMPLE_VIDEOS = [
 function App(): React.JSX.Element {
   const videoRef = useRef<VideoRef>(null);
   const [currentVideo, setCurrentVideo] = useState(SAMPLE_VIDEOS[0]);
+  const [actualVideoId, setActualVideoId] = useState<string | null>(null);
   const [screenshot, setScreenshot] = useState<string | null>(null);
   const [videoSupported, setVideoSupported] = useState<boolean | null>(null);
   const [videoDimensions, setVideoDimensions] = useState<{
@@ -58,15 +61,26 @@ function App(): React.JSX.Element {
   // Handle video load
   const handleVideoLoad = useCallback(async () => {
     try {
-      // Check if screenshot is supported
-      const supported = await isScreenshotSupported({videoId: currentVideo.id});
+      // Get the actual video IDs from the plugin
+      const availableVideos = await listAvailableVideos();
+      console.log('Available video IDs:', availableVideos);
+
+      // For now, use the first available video ID (since we only have one video loaded)
+      const videoId =
+        availableVideos.length > 0 ? availableVideos[0] : currentVideo.id;
+      setActualVideoId(videoId);
+
+      // Check if screenshot is supported using the actual video ID
+      const supported = await isScreenshotSupported({videoId});
       setVideoSupported(supported);
 
-      // Get video dimensions
-      const dimensions = await getVideoDimensions({videoId: currentVideo.id});
+      // Get video dimensions using the actual video ID
+      const dimensions = await getVideoDimensions({videoId});
       setVideoDimensions(dimensions);
     } catch (error) {
       console.error('Failed to get video info:', error);
+      // Fall back to using the original ID
+      setActualVideoId(currentVideo.id);
     }
   }, [currentVideo.id]);
 
@@ -74,8 +88,9 @@ function App(): React.JSX.Element {
   const handleCaptureScreenshot = async () => {
     try {
       setIsLoading(true);
+      const videoId = actualVideoId || currentVideo.id;
       const result = await captureScreenshot(
-        {videoId: currentVideo.id},
+        {videoId},
         {
           format: 'jpeg',
           quality: 0.8,
@@ -106,16 +121,13 @@ function App(): React.JSX.Element {
       const documentsPath = RNFS.DocumentDirectoryPath;
       const fileName = `screenshot_${Date.now()}.jpg`;
       const filePath = `${documentsPath}/${fileName}`;
+      const videoId = actualVideoId || currentVideo.id;
 
-      const result = await saveScreenshotToPath(
-        {videoId: currentVideo.id},
-        filePath,
-        {
-          format: 'jpeg',
-          quality: 1.0,
-          includeTimestamp: true,
-        },
-      );
+      const result = await saveScreenshotToPath({videoId}, filePath, {
+        format: 'jpeg',
+        quality: 1.0,
+        includeTimestamp: true,
+      });
 
       Alert.alert(
         'Saved to Documents! 📁',
@@ -124,6 +136,33 @@ function App(): React.JSX.Element {
       );
     } catch (error) {
       Alert.alert('Error', `Failed to save to path: ${error}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Save to photo library
+  const handleSaveToLibrary = async () => {
+    try {
+      setIsLoading(true);
+      const videoId = actualVideoId || currentVideo.id;
+
+      const result = await saveScreenshotToLibrary(
+        {videoId},
+        {
+          format: 'jpeg',
+          quality: 1.0,
+          includeTimestamp: true,
+        },
+      );
+
+      Alert.alert(
+        'Saved to Photo Library! 📷',
+        `File: ${result.uri}\nSize: ${result.width}x${result.height}`,
+        [{text: 'OK'}],
+      );
+    } catch (error) {
+      Alert.alert('Error', `Failed to save to library: ${error}`);
     } finally {
       setIsLoading(false);
     }
@@ -189,6 +228,18 @@ function App(): React.JSX.Element {
                 {videoDimensions.height}
               </Text>
             )}
+            <Text style={styles.infoText}>
+              Video Type:{' '}
+              {currentVideo.uri.startsWith('http')
+                ? '🌐 Remote Stream'
+                : '📁 Local File'}
+            </Text>
+            {currentVideo.uri.startsWith('http') && (
+              <Text style={styles.warningText}>
+                ⚠️ Remote videos show informational screenshots. Use local
+                videos for actual frame capture.
+              </Text>
+            )}
           </View>
         )}
 
@@ -202,6 +253,15 @@ function App(): React.JSX.Element {
             disabled={isLoading}>
             <Text style={styles.buttonText}>
               {isLoading ? '📸 Capturing...' : '📸 Capture Screenshot'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.button, styles.secondaryButton]}
+            onPress={handleSaveToLibrary}
+            disabled={isLoading}>
+            <Text style={styles.buttonText}>
+              {isLoading ? '📷 Saving...' : '📷 Save to Photo Library'}
             </Text>
           </TouchableOpacity>
 
@@ -354,6 +414,11 @@ const styles = StyleSheet.create({
     color: '#495057',
     marginBottom: 4,
   },
+  warningText: {
+    fontSize: 14,
+    color: '#dc3545',
+    marginTop: 4,
+  },
   button: {
     paddingVertical: 12,
     paddingHorizontal: 16,
@@ -362,6 +427,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   primaryButton: {
+    backgroundColor: '#007bff',
+  },
+  secondaryButton: {
     backgroundColor: '#007bff',
   },
   tertiaryButton: {
