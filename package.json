@@ -1,0 +1,108 @@
+{
+  "name": "react-native-video-screenshot-plugin",
+  "version": "1.0.0",
+  "description": "A React Native library for capturing screenshots from react-native-video players",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "react-native": "src/index.tsx",
+  "source": "src/index.tsx",
+  "files": [
+    "src",
+    "lib",
+    "android",
+    "ios",
+    "react-native-video-screenshot-plugin.podspec",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf lib",
+    "prepare": "npm run build",
+    "example:setup": "echo 'Please use the bare example in examples/bare/ - see its README.md for setup instructions'",
+    "example:install": "cd examples/bare && npm install",
+    "example:start": "cd examples/bare && npx react-native start",
+    "example:ios": "cd examples/bare && npx react-native run-ios",
+    "example:android": "cd examples/bare && npx react-native run-android",
+    "example:pods": "cd examples/bare/ios && pod install",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/ examples/bare/*.{ts,tsx,js,jsx} --ext .ts,.tsx,.js,.jsx",
+    "lint:fix": "eslint src/ examples/bare/*.{ts,tsx,js,jsx} --ext .ts,.tsx,.js,.jsx --fix",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx}\" \"examples/bare/*.{ts,tsx,js,jsx}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx}\" \"examples/bare/*.{ts,tsx,js,jsx}\"",
+    "validate": "npm run typecheck && npm run lint && npm run test",
+    "prepack": "npm run clean && npm run build",
+    "release": "npm run validate && npm publish"
+  },
+  "keywords": [
+    "react-native",
+    "react-native-video",
+    "video",
+    "screenshot",
+    "capture",
+    "frame",
+    "image",
+    "ios",
+    "android",
+    "plugin",
+    "rnv"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/react-native-video-screenshot-plugin.git"
+  },
+  "author": {
+    "name": "Your Name",
+    "email": "your.email@example.com"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/your-username/react-native-video-screenshot-plugin/issues"
+  },
+  "homepage": "https://github.com/your-username/react-native-video-screenshot-plugin#readme",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
+    "@babel/runtime": "^7.24.0",
+    "@react-native/eslint-config": "^0.73.0",
+    "@tsconfig/react-native": "^3.0.0",
+    "@types/jest": "^29.5.14",
+    "@types/react": "^18.2.0",
+    "@types/react-native": "^0.73.0",
+    "@typescript-eslint/eslint-plugin": "^5.62.0",
+    "@typescript-eslint/parser": "^5.62.0",
+    "babel-jest": "^29.7.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.0.0",
+    "react": "18.2.0",
+    "react-native": "0.73.0",
+    "react-native-video": "^6.0.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.3.0"
+  },
+  "peerDependencies": {
+    "react": ">=17.0.0",
+    "react-native": ">=0.68.0",
+    "react-native-video": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react-native-video": {
+      "optional": false
+    }
+  },
+  "engines": {
+    "node": ">=16",
+    "npm": ">=8"
+  }
+}

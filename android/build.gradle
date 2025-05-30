@@ -1,0 +1,250 @@
+import com.android.Version
+
+buildscript {
+  // Buildscript is evaluated before everything else.
+  // Properties are read from gradle.properties.
+  // It's crucial that these properties are defined in your root project's gradle.properties
+  // or in the plugin's android/gradle.properties.
+
+  // Use a consistent prefix for all plugin-specific properties.
+  def kotlinVersionProperty = project.properties['VideoPluginSample_kotlinVersion']
+
+  if (kotlinVersionProperty == null) {
+    println "Warning: 'VideoPluginSample_kotlinVersion' not found in project properties. Falling back to default 1.8.0. Please define it in your gradle.properties."
+    kotlinVersionProperty = "1.8.0"
+  }
+
+  repositories {
+    // Local Maven repository for React Native's Android binaries and other AARs.
+    // This path points to the `react-native/android` directory within your `node_modules`.
+    maven {
+        url = uri("$rootDir/../node_modules/react-native/android")
+    }
+    google()
+    mavenCentral()
+  }
+
+  dependencies {
+    // Android Gradle Plugin (AGP) version.
+    // Ensure this is compatible with your Gradle version and Android Studio.
+    classpath "com.android.tools.build:gradle:8.0.2"
+
+    // Kotlin Gradle Plugin version.
+    // The version is sourced from gradle.properties.
+    // noinspection DifferentKotlinGradleVersion
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersionProperty"
+  }
+}
+
+allprojects {
+  repositories {
+    // This repository configuration is applied to all projects, including subprojects.
+    maven {
+      url = uri("$rootDir/../node_modules/react-native/android")
+    }
+    google()
+    mavenCentral()
+    // Note: The order of repositories matters. If a dependency is available in multiple
+    // repositories, Gradle will pick the one from the first repository listed.
+  }
+}
+
+// Define common Android configuration properties in `ext` (extra properties) block.
+// These are sourced from `android/gradle.properties`.
+// Using `ext` allows these properties to be easily accessible in this build script
+// and by subprojects (like react-native-video if it needs them).
+ext {
+    minSdkVersion = project.properties['VideoPluginSample_minSdkVersion']?.toInteger()
+    compileSdkVersion = project.properties['VideoPluginSample_compileSdkVersion']?.toInteger()
+    targetSdkVersion = project.properties['VideoPluginSample_targetSdkVersion']?.toInteger()
+    buildToolsVersion = project.properties['VideoPluginSample_buildToolsVersion']
+    kotlinVersion = project.properties['VideoPluginSample_kotlinVersion']
+    androidxActivityVersion = project.properties['VideoPluginSample_androidxActivityVersion']
+    media3Version = project.properties['VideoPluginSample_media3Version']
+
+    // It's a good practice to define all versions in gradle.properties.
+    // If any of these are null, it means they are not defined.
+    if (minSdkVersion == null) println "Warning: VideoPluginSample_minSdkVersion not found in gradle.properties."
+    if (compileSdkVersion == null) println "Warning: VideoPluginSample_compileSdkVersion not found in gradle.properties."
+    if (targetSdkVersion == null) println "Warning: VideoPluginSample_targetSdkVersion not found in gradle.properties."
+    if (buildToolsVersion == null) println "Warning: VideoPluginSample_buildToolsVersion not found in gradle.properties."
+    if (kotlinVersion == null) println "Warning: VideoPluginSample_kotlinVersion not found in gradle.properties."
+    if (androidxActivityVersion == null) println "Warning: VideoPluginSample_androidxActivityVersion not found in gradle.properties."
+    if (media3Version == null) println "Warning: VideoPluginSample_media3Version not found in gradle.properties."
+
+    // Default to sensible values if not found, but definition in gradle.properties is preferred.
+    minSdkVersion = minSdkVersion ?: 21
+    compileSdkVersion = compileSdkVersion ?: 33
+    targetSdkVersion = targetSdkVersion ?: 33
+    buildToolsVersion = buildToolsVersion ?: "33.0.0"
+    kotlinVersion = kotlinVersion ?: "1.8.0"
+    androidxActivityVersion = androidxActivityVersion ?: "1.9.0"
+    media3Version = media3Version ?: "1.3.1"
+}
+
+// Function to determine React Native architectures.
+// Reads from `reactNativeArchitectures` property if defined in gradle.properties,
+// otherwise defaults to a common set.
+
+// Function to check if the New Architecture (Fabric) is enabled.
+def isNewArchitectureEnabled() {
+  return project.hasProperty("newArchEnabled") && project.getProperty("newArchEnabled") == "true"
+}
+
+apply plugin: "com.android.library"
+apply plugin: "kotlin-android"
+
+// Apply React Native Gradle plugin if New Architecture is enabled.
+// This plugin handles codegen and other New Architecture specific tasks.
+if (isNewArchitectureEnabled()) {
+  apply plugin: "com.facebook.react"
+}
+
+// Helper function to get a property from `rootProject.ext` or fall back to
+// a prefixed property from `project.properties` (gradle.properties).
+// This promotes consistency in how properties are accessed.
+def getExtOrDefault(name, defaultValue = null) {
+  def extValue = rootProject.ext.has(name) ? rootProject.ext.get(name) : null
+  if (extValue != null) return extValue
+
+  def propValue = project.properties["VideoPluginSample_" + name]
+  if (propValue != null) {
+    // Attempt to convert to Integer if the original ext property was an Integer
+    // This is a heuristic; adjust if specific type handling is needed.
+    if (rootProject.ext.has(name) && rootProject.ext.get(name) instanceof Integer) {
+        try {
+            return propValue.toInteger()
+        } catch (NumberFormatException ignored) {
+            // Fallback to string if conversion fails
+            return propValue
+        }
+    }
+    return propValue
+  }
+  if (defaultValue == null) {
+    println "Warning: Property '${name}' (or 'VideoPluginSample_${name}') not found and no default value provided."
+  }
+  return defaultValue
+}
+
+
+// Helper function to check for Android Gradle Plugin version that supports `namespace`.
+static def supportsNamespace() {
+  def parsed = Version.ANDROID_GRADLE_PLUGIN_VERSION.tokenize('.')
+  def major = parsed[0].toInteger()
+  def minor = parsed[1].toInteger()
+  // `namespace` DSL was introduced in AGP 7.3.0.
+  return (major == 7 && minor >= 3) || major >= 8
+}
+
+android {
+  // Use `namespace` for AGP 7.3+ to uniquely identify the library.
+  // This replaces `package` in AndroidManifest.xml for build purposes.
+  if (supportsNamespace()) {
+    namespace = "com.videoscreenshotplugin" // Replace with your plugin's unique namespace
+
+    // For AGP 7.3+ with unified test sources, if you have specific manifest for tests.
+    // sourceSets {
+    //   test {
+    //     manifest.srcFile 'src/test/AndroidManifest.xml'
+    //   }
+    // }
+  }
+
+    compileSdkVersion = getExtOrDefault("compileSdkVersion", 33)
+
+  defaultConfig {
+    minSdkVersion getExtOrDefault("minSdkVersion", 21)
+    targetSdkVersion getExtOrDefault("targetSdkVersion", 33)
+    // `versionCode` and `versionName` are typically not needed for library modules
+    // unless you publish them independently as AARs with specific versions.
+    // Consumer applications will define these.
+  }
+
+  buildTypes {
+    release {
+      // `minifyEnabled false` is standard for React Native libraries.
+      // Consumers of the library will handle minification at the app level.
+      minifyEnabled false
+    }
+    // You can define a `debug` build type if needed, but often the default is sufficient.
+    // debug {
+    //   // Debug-specific configurations
+    // }
+  }
+
+  lintOptions {
+    // `disable "GradleCompatible"` can be used if you encounter lint warnings
+    // related to Gradle version compatibility that are not applicable.
+    // However, it's better to ensure compatibility.
+    abortOnError false // Set to true for CI environments
+  }
+
+  compileOptions {
+    // Set Java language compatibility.
+    // Java 17 is a good modern choice, align with your project needs and AGP compatibility.
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    // Set JVM target for Kotlin. Should match Java compatibility.
+    jvmTarget = "17"
+  }
+
+  // Packaging options can be configured here if needed, e.g., excluding certain files.
+  // packagingOptions {
+  //   pickFirst 'lib/x86/libc++_shared.so'
+  //   pickFirst 'lib/x86_64/libc++_shared.so'
+  //   pickFirst 'lib/armeabi-v7a/libc++_shared.so'
+  //   pickFirst 'lib/arm64-v8a/libc++_shared.so'
+  // }
+}
+
+// Consistently use the getExtOrDefault helper for versions.
+def currentKotlinVersion = getExtOrDefault("kotlinVersion", "1.8.0")
+def currentMedia3Version = getExtOrDefault("media3Version", "1.3.1") // Ensure this is what react-native-video needs or what you intend to use
+
+dependencies {
+  // React Native dependency.
+  // For RN < 0.71, this is sourced from the local Maven repo.
+  // For RN >= 0.71, the React Native Gradle Plugin replaces this with `com.facebook.react:react-android:$version`.
+  implementation 'com.facebook.react:react-native:0.20.1' // Using '+' will pick the version from node_modules
+
+  // Kotlin standard library.
+  //noinspection GradleDependency
+  implementation "org.jetbrains.kotlin:kotlin-stdlib:$currentKotlinVersion"
+
+  // Kotlin coroutines for asynchronous programming.
+  // Use a version compatible with your Kotlin version and project needs.
+  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+
+  // Media3 dependencies.
+  // Allow building from source or using prebuilt AARs via a gradle property.
+  def media3_buildFromSource = getExtOrDefault('buildFromMedia3Source', 'false').toBoolean()
+
+  if (media3_buildFromSource) {
+    // These paths assume that the media3 modules are local projects.
+    // This is less common for typical plugin development unless you are actively modifying Media3.
+    // Ensure these projects are correctly set up in settings.gradle if used.
+    // implementation(project(":media-lib-exoplayer"))
+    // implementation(project(":media-lib-exoplayer-dash"))
+    println "Warning: 'buildFromMedia3Source' is true. Building Media3 from source is unusual for plugins. Ensure local Media3 projects are correctly configured if this is intended."
+  } else {
+    implementation "androidx.media3:media3-exoplayer:$currentMedia3Version"
+    implementation "androidx.media3:media3-exoplayer-dash:$currentMedia3Version"
+    implementation "androidx.media3:media3-ui:$currentMedia3Version"
+    implementation "androidx.media3:media3-common:$currentMedia3Version"
+    // Add media3-session or other modules if your plugin uses them.
+    // implementation "androidx.media3:media3-session:$currentMedia3Version"
+  }
+
+  // Dependency on react-native-video.
+  // This assumes react-native-video is included as a project in settings.gradle.
+  implementation project(':react-native-video')
+
+  // Add other dependencies your plugin needs here.
+  // Example:
+  // implementation "androidx.appcompat:appcompat:1.6.1"
+  // implementation "androidx.core:core-ktx:1.12.0"
+}

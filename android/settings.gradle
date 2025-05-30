@@ -1,0 +1,36 @@
+// android/settings.gradle
+// This file allows the plugin's Android code to be opened directly in Android Studio.
+
+// Define the root project for the current Android Studio project context
+// (which is this plugin's android directory)
+rootProject.name = 'ReactNativeVideoScreenshotPlugin'
+include ':'
+project(':').projectDir = new File('.') // Sets the project directory for the root project
+
+// Attempt to include react-native-video from the typical node_modules location
+// relative to this plugin's android directory.
+// This assumes your plugin structure is something like:
+// YourPlugin/
+//   node_modules/  <- This is where react-native-video should be
+//     react-native-video/
+//       android/  <- This is what we're pointing to
+//   android/      <- This is where this settings.gradle file is
+//     ...
+//
+// Adjust the path if your project structure or the location of react-native-video differs.
+
+def reactNativeVideoPath = new File(settingsDir, '../node_modules/react-native-video/android')
+
+if (reactNativeVideoPath.exists()) {
+    include ':react-native-video'
+    project(':react-native-video').projectDir = reactNativeVideoPath
+    println "SUCCESS: Included :react-native-video from ${reactNativeVideoPath.getCanonicalPath()}"
+} else {
+    println "WARNING: react-native-video module not found at ${reactNativeVideoPath.getCanonicalPath()}. " +
+            "Please ensure 'react-native-video' is installed in the plugin's root node_modules directory " +
+            "(i.e., /Users/pieczasz/Developer/Code/react-native-video-screenshot-plugin/node_modules/). " +
+            "The build might fail if it's not found."
+}
+
+// If you have other local library dependencies that are part of this standalone build,
+// you can include them here in a similar fashion. 
