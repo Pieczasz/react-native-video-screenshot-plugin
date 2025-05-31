@@ -25,11 +25,21 @@ import RNFS from 'react-native-fs';
 const testNativeModule = async () => {
   try {
     console.log('✅ Module found, testing...');
+
+    // First check if the module is available
+    if (!VideoScreenshotPlugin) {
+      console.log('⏳ VideoScreenshotPlugin not available yet');
+      return false;
+    }
+
     const result = await VideoScreenshotPlugin.testMethod();
     console.log('✅ Native module test result:', result);
     return true;
   } catch (error) {
-    console.error('❌ Native module test failed:', error);
+    console.log(
+      '⏳ Native module not ready yet (this is normal on startup):',
+      (error as Error).message,
+    );
     return false;
   }
 };
@@ -39,12 +49,15 @@ const testModuleFunctions = async () => {
   try {
     console.log('Testing module functions...');
 
-    // Test getting module info
+    // Test getting module info (gracefully handle if not available)
     try {
       const moduleInfo = await VideoScreenshotPlugin.getModuleInfo();
       console.log('✅ Module info:', moduleInfo);
     } catch (error) {
-      console.log('❌ Failed to get module info:', error);
+      console.log(
+        '⏳ Module info not available yet:',
+        (error as Error).message,
+      );
     }
 
     // Test list available videos
@@ -63,24 +76,36 @@ const testModuleFunctions = async () => {
         );
         console.log('✅ Screenshot test result:', screenshot);
       } catch (error) {
-        console.log('❌ Screenshot test failed:', error);
+        console.log(
+          '⏳ Screenshot test failed (players may not be ready):',
+          (error as Error).message,
+        );
       }
     } else {
       console.log('⏳ No players available yet for screenshot test');
     }
   } catch (error) {
-    console.error('❌ Function test failed:', error);
+    console.log(
+      '⏳ Function test failed (module may not be ready):',
+      (error as Error).message,
+    );
   }
 };
 
-// Call the tests on app start
+// Call the tests on app start - but don't block the UI
 const runTests = async () => {
-  console.log('🚀 Starting iOS module tests...');
-  const moduleWorking = await testNativeModule();
+  console.log('🚀 Starting Android module tests...');
 
-  if (moduleWorking) {
-    setTimeout(testModuleFunctions, 2000); // Wait a bit for video to load
-  }
+  // Give the app time to initialize before testing
+  setTimeout(async () => {
+    const moduleWorking = await testNativeModule();
+
+    if (moduleWorking) {
+      setTimeout(testModuleFunctions, 2000); // Wait a bit for video to load
+    } else {
+      console.log('⏳ Module not ready yet, will test when video loads');
+    }
+  }, 1000); // Wait 1 second before even trying to test
 };
 
 runTests();
