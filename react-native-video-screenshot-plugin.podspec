@@ -20,14 +20,6 @@ Pod::Spec.new do |s|
   s.dependency "React-Core"
   s.dependency "react-native-video"
 
-  # Enable C++ features
-  s.pod_target_xcconfig = {
-    "DEFINES_MODULE" => "YES",
-    "SWIFT_OBJC_INTERFACE_HEADER_NAME" => "VideoScreenshotPlugin-Swift.h"
-  }
-
-  # Support for new architecture
-  install_modules_dependencies(s)
-
-  s.compiler_flags = '-DRCT_NEW_ARCH_ENABLED=1' if ENV['RCT_NEW_ARCH_ENABLED'] == '1'
+  # We are using only old bridge architecture for now - both for the iOS and Android implementations
+  # TurboModule support can be added later
 end

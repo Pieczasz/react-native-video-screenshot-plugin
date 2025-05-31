@@ -1,990 +1,713 @@
 import Foundation
 import AVFoundation
-import AVKit
-import UIKit
 import Photos
+import UIKit
 import React
+
+// Import react-native-video if available
+#if canImport(react_native_video)
+import react_native_video
+#endif
 
 /**
  * React Native Video Screenshot Plugin - iOS Implementation
  * 
- * This plugin extends react-native-video by providing screenshot capture functionality
- * from active video players on iOS using AVFoundation.
+ * This module extends react-native-video by implementing the RNVAVPlayerPlugin interface,
+ * which allows it to hook into the video player lifecycle and capture screenshots from
+ * currently playing videos using AVFoundation.
  * 
  * Architecture Overview:
- * 1. Basic React Native Module: Registers as a standard RN module
- * 2. Player Tracking: Maintains a registry of active AVPlayer instances
- * 3. Screenshot Capture: Provides methods to capture frames from active players
- * 4. Storage Options: Supports various output formats (base64, photo library, file system)
- * 5. TurboModule Support: Compatible with React Native's new architecture
+ * 1. Plugin Registration: This module registers itself with react-native-video's plugin system
+ * 2. Player Tracking: Maintains a registry of active AVPlayer instances with their IDs
+ * 3. Lifecycle Management: Responds to player creation/destruction events
+ * 4. Screenshot Capture: Provides methods to capture frames from active players
+ * 5. Storage Options: Supports various output formats (base64, file system, photo library)
+ * 
+ * Integration with react-native-video:
+ * - Inherits from RNVAVPlayerPlugin for automatic integration
+ * - Receives player instances through onInstanceCreated/onInstanceRemoved callbacks
+ * - Uses player IDs to match JavaScript requests with native player instances
+ * - Leverages react-native-video's existing infrastructure for video playback
  */
+
+// MARK: - Plugin Error Types
+enum VideoScreenshotError: Error {
+    case playerNotFound(String)
+    case invalidPlayer
+    case screenshotFailed(String)
+    case permissionDenied
+    
+    var localizedDescription: String {
+        switch self {
+        case .playerNotFound(let id):
+            return "Video player with ID '\(id)' not found"
+        case .invalidPlayer:
+            return "Invalid video player instance"
+        case .screenshotFailed(let reason):
+            return "Screenshot capture failed: \(reason)"
+        case .permissionDenied:
+            return "Photo library access permission denied"
+        }
+    }
+}
+
+// MARK: - Screenshot Options
+struct ScreenshotOptions {
+    let quality: Float
+    let format: String
+    let maxWidth: Int
+    let maxHeight: Int
+    let includeTimestamp: Bool
+    
+    init(from dictionary: [String: Any]?) {
+        self.quality = dictionary?["quality"] as? Float ?? 1.0
+        self.format = dictionary?["format"] as? String ?? "jpeg"
+        self.maxWidth = dictionary?["maxWidth"] as? Int ?? 0
+        self.maxHeight = dictionary?["maxHeight"] as? Int ?? 0
+        self.includeTimestamp = dictionary?["includeTimestamp"] as? Bool ?? true
+    }
+}
+
+// MARK: - Screenshot Output Modes
+private enum ScreenshotOutputMode {
+    case base64Only
+    case saveToLibrary
+    case saveToPath(String)
+}
+
+// MARK: - Main Plugin Class
 @objc(VideoScreenshotPlugin)
-class VideoScreenshotPlugin: NSObject, RCTBridgeModule {
+public class VideoScreenshotPlugin: RNVPlugin, RCTBridgeModule {
     
-    // ================================
-    // REACT NATIVE MODULE SETUP
-    // ================================
+    // MARK: - Class Properties
+    private static let TAG = "VideoScreenshotPlugin"
     
-    @objc
-    static func moduleName() -> String! {
+    // Thread-safe storage for AVPlayer instances
+    private let playerQueue = DispatchQueue(label: "com.videoscreenshotplugin.players", attributes: .concurrent)
+    private var players: [String: AVPlayer] = [:]
+    
+    // React Native bridge access - must be public for RCTBridgeModule protocol
+    @objc public var bridge: RCTBridge!
+    
+    // MARK: - React Native Bridge Module
+    public static func moduleName() -> String! {
         return "VideoScreenshotPlugin"
     }
     
-    @objc
-    static func requiresMainQueueSetup() -> Bool {
-        return true
+    public static func requiresMainQueueSetup() -> Bool {
+        return false
     }
     
-    @objc
-    func constantsToExport() -> [AnyHashable : Any]! {
-        NSLog("VideoScreenshotPlugin: Module is being initialized by React Native")
+    public func constantsToExport() -> [AnyHashable: Any]! {
         return [
-            "name": "VideoScreenshotPlugin",
             "version": "1.0.0",
-            "supportsTurboModule": true
+            "platform": "iOS"
         ]
     }
     
-    // ================================
-    // TURBOMODULE COMPATIBILITY
-    // ================================
-    
-    /**
-     * Ensure module is available in both legacy and new architecture
-     */
-    @objc
-    public var bridge: RCTBridge? {
-        didSet {
-            if let bridge = bridge {
-                NSLog("VideoScreenshotPlugin: Bridge connected successfully")
-            }
-        }
-    }
-    
-    /**
-     * Invalidate method for proper cleanup
-     */
-    @objc
-    public func invalidate() {
-        NSLog("VideoScreenshotPlugin: Module invalidated, cleaning up...")
-        playerQueue.sync {
-            players.removeAll()
-        }
-    }
-    
-    // ================================
-    // CONSTANTS AND CONFIGURATION
-    // ================================
-    
-    private static let TAG = "VideoScreenshotPlugin"
-    
-    // Screenshot quality and format defaults
-    private static let DEFAULT_JPEG_QUALITY: CGFloat = 0.9
-    private static let DEFAULT_FORMAT = "jpeg"
-    
-    // Image generation configuration
-    private static let DEFAULT_REQUESTED_TIME_TOLERANCE = CMTime.zero
-    private static let FALLBACK_TIME_TOLERANCE = CMTime(seconds: 0.1, preferredTimescale: 600)
-    
-    // Maximum image dimensions to prevent memory issues
-    private static let MAX_IMAGE_DIMENSION: CGFloat = 4096
-    
-    // ================================
-    // INSTANCE VARIABLES
-    // ================================
-    
-    /**
-     * Thread-safe registry of active AVPlayer instances
-     * Key: Video player ID (assigned by react-native-video)
-     * Value: AVPlayer instance for screenshot capture
-     */
-    private var players: [String: AVPlayer] = [:]
-    
-    /**
-     * Serial queue for managing player registry operations
-     * Ensures thread-safe access to the players dictionary
-     */
-    private let playerQueue = DispatchQueue(label: "com.videoscreenshotplugin.players", qos: .userInitiated)
-    
-    /**
-     * Concurrent queue for screenshot processing operations
-     * Allows multiple screenshot operations to run simultaneously
-     */
-    private let screenshotQueue = DispatchQueue(label: "com.videoscreenshotplugin.screenshot", qos: .userInitiated, attributes: .concurrent)
-    
-    // ================================
-    // PLUGIN LIFECYCLE MANAGEMENT
-    // ================================
-    
-    /**
-     * Initialize the plugin
-     */
+    // MARK: - Initialization
     override init() {
         super.init()
-        NSLog("\(Self.TAG): VideoScreenshotPlugin initialized successfully")
-    }
-    
-    /**
-     * Clean up when the plugin is deallocated
-     */
-    deinit {
-        NSLog("\(Self.TAG): VideoScreenshotPlugin deinitializing...")
-        playerQueue.sync {
-            players.removeAll()
+        NSLog("\(VideoScreenshotPlugin.TAG): VideoScreenshotPlugin initialized - registering with react-native-video")
+        
+        // Register with react-native-video's plugin system
+        DispatchQueue.main.async {
+            self.registerWithVideoManager()
         }
-        NSLog("\(Self.TAG): VideoScreenshotPlugin cleanup completed")
     }
     
-    // ================================
-    // TEST METHOD FOR DEBUGGING
-    // ================================
+    deinit {
+        // Unregister from react-native-video if available
+        #if canImport(react_native_video)
+        ReactNativeVideoManager.shared.unregisterPlugin(plugin: self)
+        #endif
+        NSLog("\(VideoScreenshotPlugin.TAG): Plugin deinitialized and unregistered")
+    }
+    
+    // MARK: - RNVPlugin Implementation (Core Integration)
     
     /**
-     * Test method to verify the module is working
+     * Called when a new video player instance is created
+     * This is the core integration point that allows us to track active players
      */
-    @objc(testMethod:reject:)
-    func testMethod(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        NSLog("\(Self.TAG): testMethod called - module is working!")
-        resolve([
-            "status": "success",
-            "message": "iOS VideoScreenshotPlugin module is working!",
-            "timestamp": Date().timeIntervalSince1970
-        ])
+    override public func onInstanceCreated(id: String, player: Any) {
+        NSLog("\(VideoScreenshotPlugin.TAG): Player instance created - registering player with id: \(id)")
+        
+        guard let avPlayer = player as? AVPlayer else {
+            NSLog("\(VideoScreenshotPlugin.TAG): WARNING: Player is not an AVPlayer instance")
+            return
+        }
+        
+        playerQueue.async(flags: .barrier) {
+            self.players[id] = avPlayer
+            NSLog("\(VideoScreenshotPlugin.TAG): Player registration complete. Total active players: \(self.players.count)")
+        }
+        
+        // Notify React Native that this video player is ready for screenshot operations
+        DispatchQueue.main.async {
+            self.emitVideoPlayerReadyEvent(id)
+        }
     }
     
-    // ================================
-    // REACT METHODS - PUBLIC API
-    // ================================
+    /**
+     * Called when a video player instance is destroyed
+     * Ensures proper cleanup to prevent memory leaks
+     */
+    override public func onInstanceRemoved(id: String, player: Any) {
+        NSLog("\(VideoScreenshotPlugin.TAG): Player instance removed - unregistering player with id: \(id)")
+        
+        playerQueue.async(flags: .barrier) {
+            self.players.removeValue(forKey: id)
+            NSLog("\(VideoScreenshotPlugin.TAG): Player cleanup complete. Remaining active players: \(self.players.count)")
+        }
+    }
+    
+    // MARK: - Core Screenshot API Methods (matches Android exactly)
     
     /**
      * Captures a screenshot from the specified video player and returns it as base64
+     * This is the primary screenshot method for in-memory operations
+     * Matches Android: captureScreenshot(videoId: String, screenshotOptions: ReadableMap, promise: Promise)
      */
-    @objc(captureScreenshot:options:resolve:reject:)
-    func captureScreenshot(_ videoId: String, 
-                          options: [String: Any],
-                          resolve: @escaping RCTPromiseResolveBlock,
-                          reject: @escaping RCTPromiseRejectBlock) {
+    @objc public func captureScreenshot(
+        _ videoId: String,
+        screenshotOptions: [String: Any],
+        resolve: @escaping RCTPromiseResolveBlock,
+        reject: @escaping RCTPromiseRejectBlock
+    ) {
+        NSLog("\(VideoScreenshotPlugin.TAG): Screenshot capture requested for player: \(videoId)")
         
-        NSLog("\(Self.TAG): Screenshot capture requested for player: \(videoId)")
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                reject("PLUGIN_ERROR", "Plugin instance not available", nil)
-                return
-            }
-            
-            guard let player = self.getPlayerById(videoId) else {
-                let availablePlayers = self.getAvailablePlayerIds()
-                reject("PLAYER_NOT_FOUND", 
-                       "Video player '\(videoId)' not found. Available players: \(availablePlayers)", 
-                       nil)
-                return
-            }
-            
-            // Check if there's a current item
-            guard let playerItem = player.currentItem else {
-                NSLog("\(Self.TAG): No current item for player \(videoId), but providing test response")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let player = self.playerQueue.sync { self.players[videoId] }
+                guard let avPlayer = player else {
+                    let availablePlayers = self.playerQueue.sync { Array(self.players.keys) }
+                    reject("PLAYER_NOT_FOUND", 
+                          "Video player '\(videoId)' not found. Available players: \(availablePlayers)", 
+                          VideoScreenshotError.playerNotFound(videoId))
+                    return
+                }
                 
-                // For testing purposes, provide a placeholder response even without a current item
-                let result: [String: Any] = [
-                    "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-                    "width": 640,
-                    "height": 480,
-                    "timestamp": Date().timeIntervalSince1970,
-                    "message": "Test screenshot - no current item, returning placeholder",
-                    "isTestMode": true,
-                    "reason": "NO_CURRENT_ITEM"
-                ]
+                let result = try self.captureFrameFromPlayer(
+                    player: avPlayer,
+                    options: screenshotOptions,
+                    outputMode: .base64Only
+                )
                 
                 resolve(result)
-                return
+                NSLog("\(VideoScreenshotPlugin.TAG): Screenshot capture completed successfully for player: \(videoId)")
+                
+            } catch {
+                NSLog("\(VideoScreenshotPlugin.TAG): Screenshot capture failed for player \(videoId): \(error.localizedDescription)")
+                reject("CAPTURE_FAILED", "Screenshot capture failed: \(error.localizedDescription)", error)
             }
-            
-            NSLog("\(Self.TAG): Player has current item, proceeding with screenshot capture")
-            
-            self.captureFrameFromPlayer(
-                player: player,
-                playerItem: playerItem,
-                options: options,
-                outputMode: .base64Only,
-                resolve: resolve,
-                reject: reject
-            )
         }
     }
     
     /**
-     * Captures a screenshot and saves it to the device's photo library
+     * Captures a screenshot and saves it to the device's photo library/gallery
+     * Matches Android: saveScreenshotToLibrary(videoId: String, screenshotOptions: ReadableMap, promise: Promise)
      */
-    @objc(saveScreenshotToLibrary:options:resolve:reject:)
-    func saveScreenshotToLibrary(_ videoId: String,
-                                options: [String: Any],
-                                resolve: @escaping RCTPromiseResolveBlock,
-                                reject: @escaping RCTPromiseRejectBlock) {
+    @objc public func saveScreenshotToLibrary(
+        _ videoId: String,
+        screenshotOptions: [String: Any],
+        resolve: @escaping RCTPromiseResolveBlock,
+        reject: @escaping RCTPromiseRejectBlock
+    ) {
+        NSLog("\(VideoScreenshotPlugin.TAG): Save to library requested for player: \(videoId)")
         
-        NSLog("\(Self.TAG): Save to library requested for player: \(videoId)")
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                reject("PLUGIN_ERROR", "Plugin instance not available", nil)
-                return
-            }
-            
-            guard let player = self.getPlayerById(videoId) else {
-                reject("PLAYER_NOT_FOUND", "Video player '\(videoId)' not found", nil)
-                return
-            }
-            
-            guard let playerItem = player.currentItem else {
-                reject("NO_CURRENT_ITEM", "No video item is currently playing", nil)
-                return
-            }
-            
-            // Check and request photo library permission
-            self.checkPhotoLibraryPermission { [weak self] granted in
-                if granted {
-                    self?.captureFrameFromPlayer(
-                        player: player,
-                        playerItem: playerItem,
-                        options: options,
-                        outputMode: .saveToLibrary,
-                        resolve: resolve,
-                        reject: reject
-                    )
-                } else {
-                    reject("PERMISSION_DENIED", 
-                           "Photo library access permission denied. Please enable in Settings.", 
-                           nil)
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let player = self.playerQueue.sync { self.players[videoId] }
+                guard let avPlayer = player else {
+                    reject("PLAYER_NOT_FOUND", "Video player '\(videoId)' not found", VideoScreenshotError.playerNotFound(videoId))
+                    return
                 }
+                
+                let result = try self.captureFrameFromPlayer(
+                    player: avPlayer,
+                    options: screenshotOptions,
+                    outputMode: .saveToLibrary
+                )
+                
+                resolve(result)
+                NSLog("\(VideoScreenshotPlugin.TAG): Screenshot saved to library successfully for player: \(videoId)")
+                
+            } catch {
+                NSLog("\(VideoScreenshotPlugin.TAG): Save to library failed for player \(videoId): \(error.localizedDescription)")
+                reject("SAVE_FAILED", "Failed to save screenshot: \(error.localizedDescription)", error)
             }
         }
     }
     
     /**
      * Captures a screenshot and saves it to a specific file path
+     * Matches Android: saveScreenshotToPath(videoId: String, filePath: String, screenshotOptions: ReadableMap, promise: Promise)
      */
-    @objc(saveScreenshotToPath:filePath:options:resolve:reject:)
-    func saveScreenshotToPath(_ videoId: String,
-                             filePath: String,
-                             options: [String: Any],
-                             resolve: @escaping RCTPromiseResolveBlock,
-                             reject: @escaping RCTPromiseRejectBlock) {
+    @objc public func saveScreenshotToPath(
+        _ videoId: String,
+        filePath: String,
+        screenshotOptions: [String: Any],
+        resolve: @escaping RCTPromiseResolveBlock,
+        reject: @escaping RCTPromiseRejectBlock
+    ) {
+        NSLog("\(VideoScreenshotPlugin.TAG): Save to path requested for player: \(videoId), path: \(filePath)")
         
-        NSLog("\(Self.TAG): Save to path requested for player: \(videoId), path: \(filePath)")
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                reject("PLUGIN_ERROR", "Plugin instance not available", nil)
-                return
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let player = self.playerQueue.sync { self.players[videoId] }
+                guard let avPlayer = player else {
+                    reject("PLAYER_NOT_FOUND", "Video player '\(videoId)' not found", VideoScreenshotError.playerNotFound(videoId))
+                    return
+                }
+                
+                let result = try self.captureFrameFromPlayer(
+                    player: avPlayer,
+                    options: screenshotOptions,
+                    outputMode: .saveToPath(filePath)
+                )
+                
+                resolve(result)
+                NSLog("\(VideoScreenshotPlugin.TAG): Screenshot saved to path successfully: \(filePath)")
+                
+            } catch {
+                NSLog("\(VideoScreenshotPlugin.TAG): Save to path failed for \(filePath): \(error.localizedDescription)")
+                reject("SAVE_FAILED", "Failed to save to path: \(error.localizedDescription)", error)
             }
-            
-            guard let player = self.getPlayerById(videoId) else {
-                reject("PLAYER_NOT_FOUND", "Video player '\(videoId)' not found", nil)
-                return
-            }
-            
-            guard let playerItem = player.currentItem else {
-                reject("NO_CURRENT_ITEM", "No video item is currently playing", nil)
-                return
-            }
-            
-            // Validate file path
-            guard self.isValidFilePath(filePath) else {
-                reject("INVALID_PATH", "Invalid file path: \(filePath)", nil)
-                return
-            }
-            
-            self.captureFrameFromPlayer(
-                player: player,
-                playerItem: playerItem,
-                options: options,
-                outputMode: .saveToPath(filePath),
-                resolve: resolve,
-                reject: reject
-            )
         }
     }
     
     /**
      * Checks if screenshot capture is currently supported for the given player
+     * Matches Android: isScreenshotSupported(videoId: String, promise: Promise)
      */
-    @objc
-    func isScreenshotSupported(_ videoId: String,
-                              resolve: @escaping RCTPromiseResolveBlock,
-                              reject: @escaping RCTPromiseRejectBlock) {
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                reject("PLUGIN_ERROR", "Plugin instance not available", nil)
-                return
-            }
-            
-            guard let player = self.getPlayerById(videoId) else {
-                NSLog("\(Self.TAG): Screenshot support check: player \(videoId) not found")
+    @objc public func isScreenshotSupported(
+        _ videoId: String,
+        resolve: @escaping RCTPromiseResolveBlock,
+        reject: @escaping RCTPromiseRejectBlock
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let player = self.playerQueue.sync { self.players[videoId] }
+            guard let avPlayer = player else {
+                NSLog("\(VideoScreenshotPlugin.TAG): Screenshot support check: player \(videoId) not found")
                 resolve(false)
                 return
             }
             
-            let isSupported = self.isPlayerReadyForScreenshot(player)
-            NSLog("\(Self.TAG): Screenshot support for \(videoId): \(isSupported)")
-            resolve(isSupported)
+            // Check screenshot support on main thread (UI thread where player state is safe to access)
+            DispatchQueue.main.async {
+                let isSupported = self.isPlayerReadyForScreenshot(avPlayer)
+                NSLog("\(VideoScreenshotPlugin.TAG): Screenshot support for \(videoId): \(isSupported)")
+                resolve(isSupported)
+            }
         }
     }
     
     /**
      * Gets the current video dimensions for the specified player
+     * Matches Android: getVideoDimensions(videoId: String, promise: Promise)
      */
-    @objc
-    func getVideoDimensions(_ videoId: String,
-                           resolve: @escaping RCTPromiseResolveBlock,
-                           reject: @escaping RCTPromiseRejectBlock) {
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                reject("PLUGIN_ERROR", "Plugin instance not available", nil)
+    @objc public func getVideoDimensions(
+        _ videoId: String,
+        resolve: @escaping RCTPromiseResolveBlock,
+        reject: @escaping RCTPromiseRejectBlock
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let player = self.playerQueue.sync { self.players[videoId] }
+            guard let avPlayer = player else {
+                reject("PLAYER_NOT_FOUND", "Video player '\(videoId)' not found", VideoScreenshotError.playerNotFound(videoId))
                 return
             }
             
-            guard let player = self.getPlayerById(videoId) else {
-                reject("PLAYER_NOT_FOUND", "Video player '\(videoId)' not found", nil)
-                return
+            // Access video dimensions on main thread
+            DispatchQueue.main.async {
+                guard let currentItem = avPlayer.currentItem else {
+                    reject("NO_VIDEO", "No video loaded in player", VideoScreenshotError.invalidPlayer)
+                    return
+                }
+                
+                let videoSize = currentItem.presentationSize
+                if videoSize == CGSize.zero {
+                    reject("NO_DIMENSIONS", "Video dimensions not available - video may not be loaded", VideoScreenshotError.invalidPlayer)
+                    return
+                }
+                
+                let result: [String: Any] = [
+                    "width": videoSize.width,
+                    "height": videoSize.height
+                ]
+                
+                resolve(result)
+                NSLog("\(VideoScreenshotPlugin.TAG): Video dimensions retrieved for \(videoId): \(videoSize)")
             }
-            
-            guard let playerItem = player.currentItem,
-                  let videoTrack = self.getVideoTrack(from: playerItem) else {
-                reject("NO_VIDEO_TRACK", "No video track found or video not ready", nil)
-                return
-            }
-            
-            let dimensions = self.getTransformedVideoDimensions(from: videoTrack)
-            
-            let result: [String: Any] = [
-                "width": dimensions.width,
-                "height": dimensions.height
-            ]
-            
-            resolve(result)
-            NSLog("\(Self.TAG): Video dimensions retrieved for \(videoId): \(dimensions)")
         }
     }
     
-    // ================================
-    // UTILITY METHODS - PUBLIC API
-    // ================================
+    // MARK: - Utility Methods (matches Android exactly)
     
     /**
      * Lists all currently available video players
+     * Matches Android: listAvailableVideos(promise: Promise)
      */
-    @objc(listAvailableVideos:reject:)
-    func listAvailableVideos(_ resolve: @escaping RCTPromiseResolveBlock,
-                            reject: @escaping RCTPromiseRejectBlock) {
-        
-        let availablePlayerIds = getAvailablePlayerIds()
-        NSLog("\(Self.TAG): Available video players: \(availablePlayerIds)")
-        resolve(availablePlayerIds)
+    @objc public func listAvailableVideos(
+        _ resolve: RCTPromiseResolveBlock,
+        reject: RCTPromiseRejectBlock
+    ) {
+        let availablePlayers = playerQueue.sync { Array(players.keys) }
+        NSLog("\(VideoScreenshotPlugin.TAG): Available video players: \(availablePlayers)")
+        resolve(availablePlayers)
     }
     
     /**
      * Debug method to inspect the current state of registered players
+     * Matches Android: debugListPlayers(promise: Promise)
      */
-    @objc
-    func debugListPlayers(_ resolve: @escaping RCTPromiseResolveBlock,
-                         reject: @escaping RCTPromiseRejectBlock) {
+    @objc public func debugListPlayers(
+        _ resolve: RCTPromiseResolveBlock,
+        reject: RCTPromiseRejectBlock
+    ) {
+        NSLog("\(VideoScreenshotPlugin.TAG): DEBUG: Listing all registered players")
+        let availablePlayers = playerQueue.sync { Array(players.keys) }
         
-        NSLog("\(Self.TAG): DEBUG: Listing all registered players")
-        
-        let availablePlayerIds = getAvailablePlayerIds()
-        
-        for playerId in availablePlayerIds {
-            NSLog("\(Self.TAG): DEBUG: Found player with id: \(playerId)")
+        for playerId in availablePlayers {
+            NSLog("\(VideoScreenshotPlugin.TAG): DEBUG: Found player with id: \(playerId)")
         }
         
-        NSLog("\(Self.TAG): DEBUG: Total players registered: \(availablePlayerIds.count)")
-        resolve(availablePlayerIds)
+        NSLog("\(VideoScreenshotPlugin.TAG): DEBUG: Total players registered: \(availablePlayers.count)")
+        resolve(availablePlayers)
+    }
+    
+    // MARK: - Legacy Support Methods (for backward compatibility)
+    
+    /**
+     * Test method to verify plugin functionality
+     */
+    @objc public func testMethod(
+        _ resolve: RCTPromiseResolveBlock,
+        reject: RCTPromiseRejectBlock
+    ) {
+        let result: [String: Any] = [
+            "success": true,
+            "message": "VideoScreenshotPlugin is working correctly",
+            "platform": "iOS",
+            "version": "1.0.0",
+            "registeredPlayers": playerQueue.sync { players.count }
+        ]
+        resolve(result)
     }
     
     /**
-     * Get module information for debugging
+     * Get plugin information and status
      */
-    @objc(getModuleInfo:reject:)
-    func getModuleInfo(_ resolve: @escaping RCTPromiseResolveBlock,
-                      reject: @escaping RCTPromiseRejectBlock) {
+    @objc public func getModuleInfo(
+        _ resolve: RCTPromiseResolveBlock,
+        reject: RCTPromiseRejectBlock
+    ) {
+        let playerCount = playerQueue.sync { players.count }
+        let playerIds = playerQueue.sync { Array(players.keys) }
         
         let moduleInfo: [String: Any] = [
             "name": "VideoScreenshotPlugin",
             "version": "1.0.0",
             "platform": "iOS",
-            "playersRegistered": getAvailablePlayerIds().count,
-            "availablePlayerIds": getAvailablePlayerIds(),
-            "timestamp": Date().timeIntervalSince1970
+            "registeredPlayers": playerCount,
+            "playerIds": playerIds,
+            "isRegisteredWithVideoManager": true // Now we properly register
         ]
         
-        NSLog("\(Self.TAG): Module info requested: \(moduleInfo)")
         resolve(moduleInfo)
     }
     
+    // MARK: - Private Methods
+    
     /**
-     * Capture screenshot with automatic retry when video becomes ready
+     * Register with react-native-video's ReactNativeVideoManager
+     * This is the key integration step that matches Android's plugin registration
      */
-    @objc
-    func captureScreenshotWhenReady(_ videoId: String,
-                                   options: [String: Any],
-                                   resolve: @escaping RCTPromiseResolveBlock,
-                                   reject: @escaping RCTPromiseRejectBlock) {
+    private func registerWithVideoManager() {
+        NSLog("\(VideoScreenshotPlugin.TAG): Registering with ReactNativeVideoManager.shared")
         
-        NSLog("\(Self.TAG): Screenshot with wait requested for player: \(videoId)")
+        // Register with react-native-video's plugin system - this is the key step!
+        #if canImport(react_native_video)
+        ReactNativeVideoManager.shared.registerPlugin(plugin: self)
+        #endif
         
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                reject("PLUGIN_ERROR", "Plugin instance not available", nil)
-                return
-            }
-            
-            guard let player = self.getPlayerById(videoId) else {
-                let availablePlayers = self.getAvailablePlayerIds()
-                reject("PLAYER_NOT_FOUND", 
-                       "Video player '\(videoId)' not found. Available players: \(availablePlayers)", 
-                       nil)
-                return
-            }
-            
-            // Check if there's a current item
-            guard let playerItem = player.currentItem else {
-                NSLog("\(Self.TAG): No current item for player \(videoId), waiting for video to load...")
-                
-                // Wait up to 10 seconds for video to load
-                var attempts = 0
-                let maxAttempts = 20 // 10 seconds with 0.5s intervals
-                
-                func checkAndRetry() {
-                    attempts += 1
-                    
-                    if let playerItem = player.currentItem {
-                        NSLog("\(Self.TAG): Video loaded after \(attempts) * 0.5 seconds, proceeding with screenshot")
-                        
-                        self.captureFrameFromPlayer(
-                            player: player,
-                            playerItem: playerItem,
-                            options: options,
-                            outputMode: .base64Only,
-                            resolve: resolve,
-                            reject: reject
-                        )
-                    } else if attempts < maxAttempts {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                            checkAndRetry()
-                        }
-                    } else {
-                        NSLog("\(Self.TAG): Timeout waiting for video to load, providing placeholder")
-                        
-                        // Provide placeholder after timeout
-                        let result: [String: Any] = [
-                            "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-                            "width": 640,
-                            "height": 480,
-                            "timestamp": Date().timeIntervalSince1970,
-                            "message": "Timeout waiting for video to load - placeholder returned",
-                            "isTestMode": true,
-                            "waitTime": Double(attempts) * 0.5
-                        ]
-                        
-                        resolve(result)
-                    }
-                }
-                
-                checkAndRetry()
-                return
-            }
-            
-            NSLog("\(Self.TAG): Player has current item, proceeding with screenshot capture")
-            
-            self.captureFrameFromPlayer(
-                player: player,
-                playerItem: playerItem,
-                options: options,
-                outputMode: .base64Only,
-                resolve: resolve,
-                reject: reject
-            )
-        }
+        NSLog("\(VideoScreenshotPlugin.TAG): ✅ Successfully registered with react-native-video plugin system")
+        NSLog("\(VideoScreenshotPlugin.TAG): Plugin will now receive player lifecycle events")
     }
     
     /**
-     * Manual method to register a player (for testing without full plugin integration)
+     * Check if a player is ready for screenshot capture
+     * Must be called on the main thread
      */
-    @objc(registerPlayer:resolve:reject:)
-    func registerPlayer(_ playerId: String,
-                       resolve: @escaping RCTPromiseResolveBlock,
-                       reject: @escaping RCTPromiseRejectBlock) {
-        
-        NSLog("\(Self.TAG): Manual player registration requested for: \(playerId)")
-        
-        // Create a test player
-        let player = AVPlayer()
-        
-        // Register the player immediately for basic testing
-        playerQueue.sync {
-            players[playerId] = player
-        }
-        
-        // Try to load a test video asynchronously (optional)
-        DispatchQueue.global().async { [weak self] in
-            // Attempt to create a test video - this is optional and won't block the registration
-            var testVideoLoaded = false
-            var videoURL: String? = nil
-            
-            // Try a simple test video URL that should be accessible
-            if let testVideoURL = URL(string: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4") {
-                let playerItem = AVPlayerItem(url: testVideoURL)
-                
-                // Add observer for player item status
-                let statusObserver = playerItem.observe(\.status, options: [.new]) { item, _ in
-                    NSLog("\(Self.TAG): Player item status changed: \(item.status.rawValue)")
-                    if item.status == .readyToPlay {
-                        testVideoLoaded = true
-                        NSLog("\(Self.TAG): Test video loaded successfully for player \(playerId)")
-                    }
-                }
-                
-                player.replaceCurrentItem(with: playerItem)
-                videoURL = testVideoURL.absoluteString
-                
-                // Clean up observer after a timeout
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-                    statusObserver.invalidate()
-                }
-            }
-            
-            // Return success immediately - the video loading is optional
-            DispatchQueue.main.async {
-                let response: [String: Any] = [
-                    "status": "success",
-                    "playerId": playerId,
-                    "message": "Player registered successfully",
-                    "hasCurrentItem": player.currentItem != nil,
-                    "testVideoURL": videoURL ?? "none",
-                    "testMode": true,
-                    "note": "Player registered for testing. Video loading is optional and happens asynchronously."
-                ]
-                
-                resolve(response)
-                NSLog("\(Self.TAG): Player \(playerId) registered successfully")
-            }
-        }
-    }
-    
-    // ================================
-    // CORE SCREENSHOT IMPLEMENTATION
-    // ================================
-    
-    /**
-     * Defines the different output modes for screenshot capture
-     */
-    private enum ScreenshotOutputMode {
-        case base64Only
-        case saveToLibrary
-        case saveToPath(String)
+    private func isPlayerReadyForScreenshot(_ player: AVPlayer) -> Bool {
+        guard let currentItem = player.currentItem else { return false }
+        return currentItem.status == .readyToPlay && currentItem.presentationSize != CGSize.zero
     }
     
     /**
-     * Configuration data structure for screenshot options
+     * Emit an event to React Native indicating a player is ready
      */
-    private struct ScreenshotConfig {
-        let format: String
-        let quality: CGFloat
-        let maxWidth: CGFloat?
-        let maxHeight: CGFloat?
-        let includeTimestamp: Bool
-        
-        init(from options: [String: Any]) {
-            self.format = options["format"] as? String ?? VideoScreenshotPlugin.DEFAULT_FORMAT
-            self.quality = options["quality"] as? CGFloat ?? VideoScreenshotPlugin.DEFAULT_JPEG_QUALITY
-            self.maxWidth = options["maxWidth"] as? CGFloat
-            self.maxHeight = options["maxHeight"] as? CGFloat
-            self.includeTimestamp = options["includeTimestamp"] as? Bool ?? true
-        }
+    private func emitVideoPlayerReadyEvent(_ playerId: String) {
+        // For now, just log the event since we don't need events for the core functionality
+        // The Android version works without events, so let's keep it simple
+        NSLog("\(VideoScreenshotPlugin.TAG): Video player ready: \(playerId)")
     }
     
     /**
      * Core screenshot capture implementation
+     * Handles the complete workflow from frame extraction to output formatting
      */
-    private func captureFrameFromPlayer(player: AVPlayer,
-                                       playerItem: AVPlayerItem,
-                                       options: [String: Any],
-                                       outputMode: ScreenshotOutputMode,
-                                       resolve: @escaping RCTPromiseResolveBlock,
-                                       reject: @escaping RCTPromiseRejectBlock) {
+    private func captureFrameFromPlayer(
+        player: AVPlayer,
+        options: [String: Any],
+        outputMode: ScreenshotOutputMode
+    ) throws -> [String: Any] {
         
-        NSLog("\(Self.TAG): Starting screenshot capture...")
-        NSLog("\(Self.TAG): Player item status: \(playerItem.status.rawValue)")
-        NSLog("\(Self.TAG): Player item duration: \(CMTimeGetSeconds(playerItem.duration))")
+        // Parse screenshot configuration with sensible defaults
+        let config = ScreenshotOptions(from: options)
         
-        screenshotQueue.async { [weak self] in
-            guard let self = self else {
-                DispatchQueue.main.async {
-                    reject("PLUGIN_ERROR", "Plugin instance not available", nil)
-                }
-                return
-            }
-            
-            // Check if player item is ready
-            if playerItem.status != .readyToPlay {
-                NSLog("\(Self.TAG): Player item not ready, attempting to wait...")
-                
-                // For testing, provide a placeholder response if the video isn't ready
-                DispatchQueue.main.async {
-                    let result: [String: Any] = [
-                        "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", // 1x1 transparent PNG
-                        "width": 100,
-                        "height": 100,
-                        "timestamp": Date().timeIntervalSince1970,
-                        "message": "Test screenshot - player not ready, returning placeholder",
-                        "playerStatus": playerItem.status.rawValue,
-                        "isTestMode": true
-                    ]
-                    
-                    switch outputMode {
-                    case .base64Only:
-                        resolve(result)
-                    case .saveToLibrary:
-                        var mutableResult = result
-                        mutableResult["uri"] = "ph://test-placeholder"
-                        resolve(mutableResult)
-                    case .saveToPath(let filePath):
-                        var mutableResult = result
-                        mutableResult["uri"] = filePath
-                        mutableResult["size"] = 100
-                        resolve(mutableResult)
-                    }
-                }
-                return
-            }
-            
-            // Try to get video track
-            guard let videoTrack = self.getVideoTrack(from: playerItem) else {
-                NSLog("\(Self.TAG): No video track found, providing test response")
-                
-                DispatchQueue.main.async {
-                    let result: [String: Any] = [
-                        "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-                        "width": 320,
-                        "height": 240,
-                        "timestamp": Date().timeIntervalSince1970,
-                        "message": "Test screenshot - no video track found, returning placeholder",
-                        "isTestMode": true
-                    ]
-                    
-                    switch outputMode {
-                    case .base64Only:
-                        resolve(result)
-                    case .saveToLibrary:
-                        var mutableResult = result
-                        mutableResult["uri"] = "ph://test-no-track"
-                        resolve(mutableResult)
-                    case .saveToPath(let filePath):
-                        var mutableResult = result
-                        mutableResult["uri"] = filePath
-                        mutableResult["size"] = 100
-                        resolve(mutableResult)
-                    }
-                }
-                return
-            }
-            
-            // Create image generator
-            let asset = playerItem.asset
-            let imageGenerator = AVAssetImageGenerator(asset: asset)
-            imageGenerator.appliesPreferredTrackTransform = true
-            imageGenerator.requestedTimeToleranceAfter = VideoScreenshotPlugin.DEFAULT_REQUESTED_TIME_TOLERANCE
-            imageGenerator.requestedTimeToleranceBefore = VideoScreenshotPlugin.DEFAULT_REQUESTED_TIME_TOLERANCE
-            
-            // Get current playback time
-            let currentTime = player.currentTime()
-            
-            NSLog("\(Self.TAG): Attempting to generate image at time: \(CMTimeGetSeconds(currentTime))")
-            
-            imageGenerator.generateCGImagesAsynchronously(forTimes: [NSValue(time: currentTime)]) { [weak self] (requestedTime, cgImage, actualTime, result, error) in
-                
-                DispatchQueue.main.async {
-                    guard let self = self else {
-                        reject("PLUGIN_ERROR", "Plugin instance not available during image generation", nil)
-                        return
-                    }
-                    
-                    if let error = error {
-                        NSLog("\(Self.TAG): Image generation failed: \(error.localizedDescription)")
-                        
-                        // Provide test response even on error
-                        let result: [String: Any] = [
-                            "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-                            "width": 480,
-                            "height": 360,
-                            "timestamp": Date().timeIntervalSince1970,
-                            "message": "Test screenshot - image generation failed, returning placeholder",
-                            "error": error.localizedDescription,
-                            "isTestMode": true
-                        ]
-                        
-                        switch outputMode {
-                        case .base64Only:
-                            resolve(result)
-                        case .saveToLibrary:
-                            var mutableResult = result
-                            mutableResult["uri"] = "ph://test-error"
-                            resolve(mutableResult)
-                        case .saveToPath(let filePath):
-                            var mutableResult = result
-                            mutableResult["uri"] = filePath
-                            mutableResult["size"] = 100
-                            resolve(mutableResult)
-                        }
-                        return
-                    }
-                    
-                    guard let cgImage = cgImage else {
-                        NSLog("\(Self.TAG): No image generated")
-                        reject("NO_IMAGE", "Failed to generate screenshot image", nil)
-                        return
-                    }
-                    
-                    NSLog("\(Self.TAG): Successfully generated screenshot image: \(cgImage.width)x\(cgImage.height)")
-                    
-                    // Convert to UIImage and process
-                    let uiImage = UIImage(cgImage: cgImage)
-                    self.processScreenshotImage(
-                        image: uiImage,
-                        config: ScreenshotConfig(from: options),
-                        outputMode: outputMode,
-                        timestamp: CMTimeGetSeconds(actualTime),
-                        resolve: resolve,
-                        reject: reject
-                    )
-                }
-            }
-        }
-    }
-    
-    /**
-     * Process the captured screenshot image according to configuration and output mode
-     */
-    private func processScreenshotImage(image: UIImage,
-                                       config: ScreenshotConfig,
-                                       outputMode: ScreenshotOutputMode,
-                                       timestamp: TimeInterval,
-                                       resolve: @escaping RCTPromiseResolveBlock,
-                                       reject: @escaping RCTPromiseRejectBlock) {
+        // Get current playback timestamp if requested (must be done on main thread)
+        let timestamp: Double? = config.includeTimestamp ? 
+            DispatchQueue.main.sync { player.currentTime().seconds } : nil
         
-        // Apply resize if needed
-        let processedImage = resizeImageIfNeeded(image: image, config: config)
-        
-        // Convert to data
-        guard let imageData = convertImageToData(image: processedImage, config: config) else {
-            reject("CONVERSION_ERROR", "Failed to convert image to data", nil)
-            return
+        // Extract the actual video frame
+        guard let originalImage = try extractVideoFrame(from: player) else {
+            throw VideoScreenshotError.screenshotFailed("Failed to extract frame from video")
         }
         
+        // Apply any requested resizing
+        let processedImage = resizeImageIfNeeded(originalImage, maxWidth: config.maxWidth, maxHeight: config.maxHeight)
+        
+        // Convert to the requested format and generate base64
+        let imageData = convertImageToData(processedImage, format: config.format, quality: config.quality)
         let base64String = imageData.base64EncodedString()
         
+        // Build the result object with screenshot data and metadata
         var result: [String: Any] = [
             "base64": base64String,
-            "width": Int(processedImage.size.width),
-            "height": Int(processedImage.size.height),
-            "format": config.format,
-            "size": imageData.count
+            "width": processedImage.size.width,
+            "height": processedImage.size.height,
+            "success": true
         ]
         
-        if config.includeTimestamp {
+        if let timestamp = timestamp {
             result["timestamp"] = timestamp
         }
         
+        // Handle the requested output mode
         switch outputMode {
-        case .base64Only:
-            resolve(result)
-            
         case .saveToLibrary:
-            saveImageToPhotoLibrary(image: processedImage) { [weak self] success, identifier, error in
-                if success, let identifier = identifier {
-                    result["uri"] = "ph://\(identifier)"
-                    resolve(result)
-                } else {
-                    reject("SAVE_ERROR", "Failed to save to photo library: \(error?.localizedDescription ?? "Unknown error")", nil)
-                }
-            }
+            let success = try saveImageToPhotoLibrary(processedImage)
+            result["savedToLibrary"] = success
+            result["uri"] = "photo-library://screenshot_\(Int(Date().timeIntervalSince1970))"
             
         case .saveToPath(let filePath):
-            saveImageToFile(imageData: imageData, filePath: filePath) { success, error in
-                if success {
-                    result["uri"] = filePath
-                    resolve(result)
-                } else {
-                    reject("SAVE_ERROR", "Failed to save to file: \(error?.localizedDescription ?? "Unknown error")", nil)
-                }
-            }
+            try saveImageDataToFile(imageData, filePath: filePath)
+            result["uri"] = "file://\(filePath)"
+            result["size"] = imageData.count
+            
+        case .base64Only:
+            // Base64 is already included, no additional output needed
+            break
+        }
+        
+        return result
+    }
+    
+    /**
+     * Extract a video frame from the given AVPlayer instance
+     */
+    private func extractVideoFrame(from player: AVPlayer) throws -> UIImage? {
+        guard let currentItem = player.currentItem else {
+            throw VideoScreenshotError.invalidPlayer
+        }
+        
+        // Create image generator
+        let imageGenerator = AVAssetImageGenerator(asset: currentItem.asset)
+        imageGenerator.appliesPreferredTrackTransform = true
+        imageGenerator.requestedTimeToleranceBefore = .zero
+        imageGenerator.requestedTimeToleranceAfter = .zero
+        
+        // Use current playback time
+        let currentTime = player.currentTime()
+        
+        do {
+            let cgImage = try imageGenerator.copyCGImage(at: currentTime, actualTime: nil)
+            return UIImage(cgImage: cgImage)
+        } catch {
+            NSLog("\(VideoScreenshotPlugin.TAG): Frame extraction failed: \(error.localizedDescription)")
+            return nil
         }
     }
     
     /**
-     * Resize image if maximum dimensions are specified
+     * Resize image if max dimensions are specified
      */
-    private func resizeImageIfNeeded(image: UIImage, config: ScreenshotConfig) -> UIImage {
-        guard let maxWidth = config.maxWidth, let maxHeight = config.maxHeight else {
-            return image
+    private func resizeImageIfNeeded(_ image: UIImage, maxWidth: Int, maxHeight: Int) -> UIImage {
+        guard maxWidth > 0 || maxHeight > 0 else { return image }
+        
+        let originalSize = image.size
+        var targetSize = originalSize
+        
+        // Calculate target size maintaining aspect ratio
+        if maxWidth > 0 && targetSize.width > CGFloat(maxWidth) {
+            let ratio = CGFloat(maxWidth) / targetSize.width
+            targetSize = CGSize(width: CGFloat(maxWidth), height: targetSize.height * ratio)
         }
         
-        let currentSize = image.size
-        let widthRatio = maxWidth / currentSize.width
-        let heightRatio = maxHeight / currentSize.height
-        let ratio = min(widthRatio, heightRatio, 1.0)
-        
-        if ratio < 1.0 {
-            let newSize = CGSize(width: currentSize.width * ratio, height: currentSize.height * ratio)
-            
-            UIGraphicsBeginImageContextWithOptions(newSize, false, image.scale)
-            image.draw(in: CGRect(origin: .zero, size: newSize))
-            let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
-            UIGraphicsEndImageContext()
-            
-            return resizedImage ?? image
+        if maxHeight > 0 && targetSize.height > CGFloat(maxHeight) {
+            let ratio = CGFloat(maxHeight) / targetSize.height
+            targetSize = CGSize(width: targetSize.width * ratio, height: CGFloat(maxHeight))
         }
         
-        return image
+        guard targetSize != originalSize else { return image }
+        
+        // Resize the image
+        UIGraphicsBeginImageContextWithOptions(targetSize, false, image.scale)
+        image.draw(in: CGRect(origin: .zero, size: targetSize))
+        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        
+        return resizedImage ?? image
     }
     
     /**
-     * Convert image to data based on format and quality settings
+     * Convert UIImage to data with specified format and quality
      */
-    private func convertImageToData(image: UIImage, config: ScreenshotConfig) -> Data? {
-        switch config.format.lowercased() {
-        case "jpeg", "jpg":
-            return image.jpegData(compressionQuality: config.quality)
+    private func convertImageToData(_ image: UIImage, format: String, quality: Float) -> Data {
+        switch format.lowercased() {
         case "png":
-            return image.pngData()
+            return image.pngData() ?? Data()
+        case "jpeg", "jpg":
+            return image.jpegData(compressionQuality: CGFloat(quality)) ?? Data()
         default:
-            NSLog("\(Self.TAG): Unsupported format '\(config.format)', using JPEG")
-            return image.jpegData(compressionQuality: config.quality)
+            return image.jpegData(compressionQuality: CGFloat(quality)) ?? Data()
         }
     }
     
     /**
-     * Save image to photo library
+     * Save image to photo library with permission handling
      */
-    private func saveImageToPhotoLibrary(image: UIImage, completion: @escaping (Bool, String?, Error?) -> Void) {
-        var localIdentifier: String?
-        
-        PHPhotoLibrary.shared().performChanges({
-            let request = PHAssetChangeRequest.creationRequestForAsset(from: image)
-            localIdentifier = request.placeholderForCreatedAsset?.localIdentifier
-        }) { success, error in
-            DispatchQueue.main.async {
-                completion(success, localIdentifier, error)
-            }
-        }
-    }
-    
-    /**
-     * Save image data to file
-     */
-    private func saveImageToFile(imageData: Data, filePath: String, completion: @escaping (Bool, Error?) -> Void) {
-        do {
-            try imageData.write(to: URL(fileURLWithPath: filePath))
-            completion(true, nil)
-        } catch {
-            completion(false, error)
-        }
-    }
-    
-    // ================================
-    // HELPER METHODS
-    // ================================
-    
-    /**
-     * Gets a player by ID with thread safety
-     */
-    private func getPlayerById(_ videoId: String) -> AVPlayer? {
-        return playerQueue.sync {
-            return players[videoId]
-        }
-    }
-    
-    /**
-     * Gets all available player IDs
-     */
-    private func getAvailablePlayerIds() -> [String] {
-        return playerQueue.sync {
-            return Array(players.keys)
-        }
-    }
-    
-    /**
-     * Checks if a player is ready for screenshot capture
-     */
-    private func isPlayerReadyForScreenshot(_ player: AVPlayer) -> Bool {
-        guard let playerItem = player.currentItem else { return false }
-        guard playerItem.status == .readyToPlay else { return false }
-        guard getVideoTrack(from: playerItem) != nil else { return false }
-        
-        return true
-    }
-    
-    /**
-     * Gets the video track from a player item
-     */
-    private func getVideoTrack(from playerItem: AVPlayerItem) -> AVAssetTrack? {
-        return playerItem.tracks.first(where: { $0.assetTrack?.mediaType == .video })?.assetTrack
-    }
-    
-    /**
-     * Gets video dimensions accounting for transformations
-     */
-    private func getTransformedVideoDimensions(from videoTrack: AVAssetTrack) -> CGSize {
-        let naturalSize = videoTrack.naturalSize
-        let transform = videoTrack.preferredTransform
-        
-        // Apply transform to get correct dimensions
-        let size = naturalSize.applying(transform)
-        return CGSize(width: abs(size.width), height: abs(size.height))
-    }
-    
-    /**
-     * Validates if a file path is acceptable for saving
-     */
-    private func isValidFilePath(_ filePath: String) -> Bool {
-        let url = URL(fileURLWithPath: filePath)
-        let directory = url.deletingLastPathComponent()
-        
-        // Check if the directory exists or can be created
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory) {
-            return isDirectory.boolValue
-        }
-        
-        // Try to create the directory
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
-            return true
-        } catch {
-            NSLog("\(Self.TAG): Cannot create directory for path: \(filePath), error: \(error)")
-            return false
-        }
-    }
-    
-    /**
-     * Checks photo library permission with completion handler
-     */
-    private func checkPhotoLibraryPermission(completion: @escaping (Bool) -> Void) {
+    private func saveImageToPhotoLibrary(_ image: UIImage) throws -> Bool {
         let status = PHPhotoLibrary.authorizationStatus()
         
         switch status {
         case .authorized:
-            completion(true)
+            break
         case .notDetermined:
-            PHPhotoLibrary.requestAuthorization { newStatus in
-                DispatchQueue.main.async {
-                    completion(newStatus == .authorized)
-                }
-            }
+            // For synchronous operation, we'll just check status
+            // In a real app, you might want to request permission asynchronously
+            throw VideoScreenshotError.permissionDenied
         default:
-            completion(false)
+            throw VideoScreenshotError.permissionDenied
+        }
+        
+        var saveSuccess = false
+        var saveError: Error?
+        
+        PHPhotoLibrary.shared().performChanges({
+            PHAssetChangeRequest.creationRequestForAsset(from: image)
+        }) { success, error in
+            saveSuccess = success
+            saveError = error
+        }
+        
+        if let error = saveError {
+            throw error
+        }
+        
+        return saveSuccess
+    }
+    
+    /**
+     * Save image data to a specific file path
+     */
+    private func saveImageDataToFile(_ imageData: Data, filePath: String) throws {
+        let url = URL(fileURLWithPath: filePath)
+        
+        // Ensure parent directories exist
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        
+        // Write the image data
+        try imageData.write(to: url)
+    }
+    
+    // MARK: - Additional Utility Methods
+    
+    // Manual registration method (for testing) - simplified since we now have proper integration
+    @objc public func registerPlayer(
+        _ playerId: String,
+        resolve: @escaping RCTPromiseResolveBlock,
+        reject: @escaping RCTPromiseRejectBlock
+    ) {
+        NSLog("\(VideoScreenshotPlugin.TAG): Manual player registration requested for ID: \(playerId)")
+        
+        let currentPlayers = playerQueue.sync { Array(players.keys) }
+        let isPlayerRegistered = currentPlayers.contains(playerId)
+        
+        let result: [String: Any] = [
+            "success": isPlayerRegistered,
+            "playerId": playerId,
+            "message": isPlayerRegistered ? 
+                "Player is registered and ready for screenshots" : 
+                "Player not found - it will be registered automatically when video loads",
+            "registrationType": "automatic",
+            "integrationMode": "react-native-video-plugin",
+            "totalPlayers": currentPlayers.count,
+            "availablePlayers": currentPlayers
+        ]
+        
+        resolve(result)
+        NSLog("\(VideoScreenshotPlugin.TAG): Manual registration check result: \(result)")
+    }
+    
+    // Photo library permission methods
+    @objc public func checkPhotoLibraryPermission(
+        _ resolve: RCTPromiseResolveBlock,
+        reject: RCTPromiseRejectBlock
+    ) {
+        let status = PHPhotoLibrary.authorizationStatus()
+        let result: [String: Any] = [
+            "granted": status == .authorized,
+            "status": authorizationStatusToString(status)
+        ]
+        resolve(result)
+    }
+    
+    @objc public func requestPhotoLibraryPermission(
+        _ resolve: @escaping RCTPromiseResolveBlock,
+        reject: @escaping RCTPromiseRejectBlock
+    ) {
+        PHPhotoLibrary.requestAuthorization { status in
+            DispatchQueue.main.async {
+                let result: [String: Any] = [
+                    "granted": status == .authorized,
+                    "status": self.authorizationStatusToString(status)
+                ]
+                resolve(result)
+            }
         }
     }
-}
+    
+    private func authorizationStatusToString(_ status: PHAuthorizationStatus) -> String {
+        switch status {
+        case .authorized:
+            return "authorized"
+        case .denied:
+            return "denied"
+        case .notDetermined:
+            return "notDetermined"
+        case .restricted:
+            return "restricted"
+        case .limited:
+            return "limited"
+        @unknown default:
+            return "unknown"
+        }
+    }
+} 

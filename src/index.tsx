@@ -1,4 +1,5 @@
 import { NativeModules, Platform } from 'react-native';
+import NativeVideoScreenshotPlugin from './NativeVideoScreenshotPlugin';
 
 const LINKING_ERROR =
   "The package 'react-native-video-screenshot-plugin' doesn't seem to be linked. Make sure: \n\n" +
@@ -6,16 +7,50 @@ const LINKING_ERROR =
   '- You rebuilt the app after installing the package\n' +
   '- You are not using Expo Go\n';
 
-const VideoScreenshotPlugin = NativeModules.VideoScreenshotPlugin
-  ? NativeModules.VideoScreenshotPlugin
-  : new Proxy(
-      {},
-      {
-        get() {
-          throw new Error(LINKING_ERROR);
-        },
-      }
-    );
+// Try to get the native module with multiple fallback strategies
+function getNativeModule() {
+  // Strategy 1: Try TurboModule (New Architecture)
+  try {
+    return NativeVideoScreenshotPlugin;
+  } catch (turboError) {
+    console.log('📱 TurboModule not available, trying legacy module...');
+
+    // Strategy 2: Try Legacy NativeModules
+    const legacyModule = NativeModules.VideoScreenshotPlugin;
+    if (legacyModule) {
+      console.log('📱 Using legacy NativeModules bridge');
+      return legacyModule;
+    }
+
+    // Strategy 3: Try alternative naming
+    const altModule = NativeModules.RNVideoScreenshotPlugin;
+    if (altModule) {
+      console.log('📱 Using alternative module name');
+      return altModule;
+    }
+
+    console.error('❌ No native module found. TurboModule error:', turboError);
+    throw new Error(LINKING_ERROR);
+  }
+}
+
+// Get the native module instance
+let VideoScreenshotPlugin: any;
+try {
+  VideoScreenshotPlugin = getNativeModule();
+  console.log('✅ Native module loaded successfully');
+} catch (error) {
+  console.error('❌ Failed to load native module:', error);
+  // Create a proxy that throws errors for better debugging
+  VideoScreenshotPlugin = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error(LINKING_ERROR);
+      },
+    }
+  );
+}
 
 export interface ScreenshotOptions {
   /**
@@ -54,10 +89,65 @@ export interface ScreenshotResult {
   height: number;
   timestamp?: number;
   size?: number;
+  platform?: string;
+  message?: string;
+  isTestMode?: boolean;
+  reason?: string;
+  playerStatus?: number;
+  error?: string;
+  waitTime?: number;
 }
 
 export interface VideoRef {
   videoId: string;
+}
+
+export interface ModuleInfo {
+  name: string;
+  version: string;
+  platform: string;
+  playersRegistered: number;
+  availablePlayerIds: string[];
+  timestamp: number;
+}
+
+export interface PlayerRegistrationResult {
+  status: string;
+  playerId: string;
+  message: string;
+  hasCurrentItem: boolean;
+  testVideoURL?: string;
+  testMode: boolean;
+  platform: string;
+  note?: string;
+}
+
+export interface TestResult {
+  status: string;
+  message: string;
+  timestamp: number;
+  platform: string;
+}
+
+/**
+ * Test if the native module is working
+ */
+export function testMethod(): Promise<TestResult> {
+  return VideoScreenshotPlugin.testMethod();
+}
+
+/**
+ * Get module information and status
+ */
+export function getModuleInfo(): Promise<ModuleInfo> {
+  return VideoScreenshotPlugin.getModuleInfo();
+}
+
+/**
+ * Register a test player (for development/testing)
+ */
+export function registerPlayer(playerId: string): Promise<PlayerRegistrationResult> {
+  return VideoScreenshotPlugin.registerPlayer(playerId);
 }
 
 /**
@@ -90,6 +180,23 @@ export function captureScreenshot(
   };
 
   return VideoScreenshotPlugin.captureScreenshot(videoRef.videoId, config);
+}
+
+/**
+ * Captures a screenshot with automatic retry when video becomes ready
+ */
+export function captureScreenshotWhenReady(
+  videoRef: VideoRef,
+  options: ScreenshotOptions = {}
+): Promise<ScreenshotResult> {
+  const config = {
+    format: 'jpeg',
+    quality: 0.9,
+    includeTimestamp: true,
+    ...options,
+  };
+
+  return VideoScreenshotPlugin.captureScreenshotWhenReady(videoRef.videoId, config);
 }
 
 /**
@@ -199,7 +306,7 @@ export function getVideoDimensions(videoRef: VideoRef): Promise<{ width: number;
 }
 
 /**
- * Lists all available video player instances
+ * Lists all currently available video players
  *
  * @returns Promise resolving to array of video IDs
  *
@@ -216,23 +323,31 @@ export function listAvailableVideos(): Promise<string[]> {
 }
 
 /**
- * Debug method to list all registered players with detailed info
- *
- * @returns Promise resolving to array of player IDs
+ * Debug method to list all registered players
  */
 export function debugListPlayers(): Promise<string[]> {
   return VideoScreenshotPlugin.debugListPlayers();
 }
 
-// Types are already exported above, no need to re-export
+// Export the class-based API as well for advanced usage
+export class VideoScreenshotPluginClass {
+  static testMethod = testMethod;
+  static getModuleInfo = getModuleInfo;
+  static registerPlayer = registerPlayer;
+  static captureScreenshot = (videoId: string, options?: ScreenshotOptions) =>
+    VideoScreenshotPlugin.captureScreenshot(videoId, options);
+  static captureScreenshotWhenReady = (videoId: string, options?: ScreenshotOptions) =>
+    VideoScreenshotPlugin.captureScreenshotWhenReady(videoId, options);
+  static saveScreenshotToLibrary = (videoId: string, options?: ScreenshotOptions) =>
+    VideoScreenshotPlugin.saveScreenshotToLibrary(videoId, options);
+  static saveScreenshotToPath = (videoId: string, filePath: string, options?: ScreenshotOptions) =>
+    VideoScreenshotPlugin.saveScreenshotToPath(videoId, filePath, options);
+  static isScreenshotSupported = (videoId: string) =>
+    VideoScreenshotPlugin.isScreenshotSupported(videoId);
+  static getVideoDimensions = (videoId: string) =>
+    VideoScreenshotPlugin.getVideoDimensions(videoId);
+  static listAvailableVideos = listAvailableVideos;
+  static debugListPlayers = debugListPlayers;
+}
 
-// Default export
-export default {
-  captureScreenshot,
-  saveScreenshotToLibrary,
-  saveScreenshotToPath,
-  isScreenshotSupported,
-  getVideoDimensions,
-  listAvailableVideos,
-  debugListPlayers,
-};
+export default VideoScreenshotPluginClass;
