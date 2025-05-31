@@ -48,41 +48,15 @@ export interface ScreenshotOptions {
 }
 
 export interface ScreenshotResult {
-  /**
-   * Base64 encoded image data
-   */
   base64: string;
-
-  /**
-   * File URI if saved to device
-   */
   uri?: string;
-
-  /**
-   * Image width in pixels
-   */
   width: number;
-
-  /**
-   * Image height in pixels
-   */
   height: number;
-
-  /**
-   * Video timestamp when screenshot was taken (in seconds)
-   */
   timestamp?: number;
-
-  /**
-   * File size in bytes (if saved)
-   */
   size?: number;
 }
 
 export interface VideoRef {
-  /**
-   * Reference ID for the video player instance
-   */
   videoId: string;
 }
 

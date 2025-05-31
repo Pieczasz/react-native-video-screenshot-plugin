@@ -16,17 +16,179 @@ import {
   Alert,
   Image,
   Dimensions,
+  NativeModules,
 } from 'react-native';
 import Video, {VideoRef} from 'react-native-video';
 import {
   captureScreenshot,
   saveScreenshotToPath,
   saveScreenshotToLibrary,
-  isScreenshotSupported,
-  getVideoDimensions,
-  listAvailableVideos,
 } from 'react-native-video-screenshot-plugin';
 import RNFS from 'react-native-fs';
+
+// ================================
+// ROBUST MODULE ACCESS HELPER
+// ================================
+
+/**
+ * Get the VideoScreenshotPlugin native module with fallback strategies
+ * This works with both legacy and new React Native architectures
+ */
+const getVideoScreenshotPlugin = () => {
+  // Try direct access first
+  if (NativeModules.VideoScreenshotPlugin) {
+    return NativeModules.VideoScreenshotPlugin;
+  }
+
+  // Try accessing from global registry (new architecture)
+  const globalObj = global as any;
+  if (globalObj.__turboModuleProxy) {
+    try {
+      const TurboModuleRegistry = require('react-native/Libraries/TurboModule/TurboModuleRegistry');
+      return (
+        TurboModuleRegistry.get &&
+        TurboModuleRegistry.get('VideoScreenshotPlugin')
+      );
+    } catch (error) {
+      console.log('TurboModule access failed:', error);
+    }
+  }
+
+  // Last resort: check if it exists in any form
+  const allKeys = Object.keys(NativeModules);
+  const videoModuleKey = allKeys.find(
+    key => key.includes('VideoScreenshot') || key.includes('videoScreenshot'),
+  );
+  if (videoModuleKey) {
+    console.log(`Found module with key: ${videoModuleKey}`);
+    return NativeModules[videoModuleKey];
+  }
+
+  console.warn('VideoScreenshotPlugin not found in any module registry');
+  return null;
+};
+
+// Test the enhanced module access
+const testEnhancedModuleAccess = () => {
+  console.log('🔧 Testing enhanced module access...');
+  const module = getVideoScreenshotPlugin();
+  console.log('🔧 Enhanced access result:', !!module);
+  console.log(
+    '🔧 Module methods:',
+    module ? Object.keys(module).slice(0, 5) : 'none',
+  );
+  return module;
+};
+
+// Debug: Check if the native module is available
+console.log('Available Native Modules:', Object.keys(NativeModules));
+console.log(
+  'VideoScreenshotPlugin module:',
+  NativeModules.VideoScreenshotPlugin,
+);
+
+// Test enhanced module access
+testEnhancedModuleAccess();
+
+// Test the native module
+const testNativeModule = async () => {
+  try {
+    const videoScreenshotPlugin = getVideoScreenshotPlugin();
+    if (videoScreenshotPlugin) {
+      console.log('✅ Module found, testing...');
+      const result = await videoScreenshotPlugin.testMethod();
+      console.log('✅ Native module test result:', result);
+      return true;
+    } else {
+      console.log(
+        '❌ VideoScreenshotPlugin module not found with enhanced access',
+      );
+      console.log(
+        'Available modules:',
+        Object.keys(NativeModules).slice(0, 10),
+      );
+      return false;
+    }
+  } catch (error) {
+    console.error('❌ Native module test failed:', error);
+    return false;
+  }
+};
+
+// Test basic module functions
+const testModuleFunctions = async () => {
+  try {
+    const videoScreenshotPlugin = getVideoScreenshotPlugin();
+    if (!videoScreenshotPlugin) {
+      console.log('❌ Module not available for function testing');
+      return;
+    }
+
+    console.log('Testing module functions...');
+
+    // Test getting module info
+    try {
+      const moduleInfo = await videoScreenshotPlugin.getModuleInfo();
+      console.log('✅ Module info:', moduleInfo);
+    } catch (error) {
+      console.log('❌ Failed to get module info:', error);
+    }
+
+    // Test manual player registration
+    const regResult = await videoScreenshotPlugin.registerPlayer(
+      'test-player-1',
+    );
+    console.log('✅ Player registration result:', regResult);
+
+    // Test list available videos
+    const videoList = await videoScreenshotPlugin.listAvailableVideos();
+    console.log('✅ Available videos:', videoList);
+
+    // Test capture screenshot with registered player (immediate)
+    try {
+      const screenshot = await videoScreenshotPlugin.captureScreenshot(
+        'test-player-1',
+        {
+          format: 'jpeg',
+          quality: 0.8,
+        },
+      );
+      console.log('✅ Screenshot test result (immediate):', screenshot);
+    } catch (error) {
+      console.log('❌ Immediate screenshot failed:', error);
+    }
+
+    // Test capture screenshot when ready (with wait)
+    try {
+      console.log('⏳ Testing screenshot capture with wait...');
+      const screenshotWithWait =
+        await videoScreenshotPlugin.captureScreenshotWhenReady(
+          'test-player-1',
+          {
+            format: 'jpeg',
+            quality: 0.8,
+          },
+        );
+      console.log('✅ Screenshot test result (with wait):', screenshotWithWait);
+    } catch (error) {
+      console.log('❌ Screenshot with wait failed:', error);
+    }
+  } catch (error) {
+    console.error('❌ Function test failed:', error);
+  }
+};
+
+// Call the tests on app start
+const runTests = async () => {
+  console.log('🚀 Starting iOS module tests...');
+  const moduleWorking = await testNativeModule();
+
+  if (moduleWorking) {
+    setTimeout(testModuleFunctions, 1000);
+  }
+};
+
+runTests();
 
 const {width: screenWidth} = Dimensions.get('window');
 const VIDEO_WIDTH = screenWidth - 32;
@@ -61,8 +223,13 @@ function App(): React.JSX.Element {
   // Handle video load
   const handleVideoLoad = useCallback(async () => {
     try {
-      // Get the actual video IDs from the plugin
-      const availableVideos = await listAvailableVideos();
+      // Use robust module access
+      const videoScreenshotPlugin = getVideoScreenshotPlugin();
+
+      // Get the actual video IDs from the plugin using the enhanced module access
+      const availableVideos = videoScreenshotPlugin
+        ? await videoScreenshotPlugin.listAvailableVideos()
+        : [];
       console.log('Available video IDs:', availableVideos);
 
       // For now, use the first available video ID (since we only have one video loaded)
@@ -70,17 +237,35 @@ function App(): React.JSX.Element {
         availableVideos.length > 0 ? availableVideos[0] : currentVideo.id;
       setActualVideoId(videoId);
 
-      // Check if screenshot is supported using the actual video ID
-      const supported = await isScreenshotSupported({videoId});
-      setVideoSupported(supported);
+      // Check if screenshot is supported using the actual video ID and enhanced module access
+      if (videoScreenshotPlugin) {
+        try {
+          const supported = await videoScreenshotPlugin.isScreenshotSupported(
+            videoId,
+          );
+          setVideoSupported(supported);
 
-      // Get video dimensions using the actual video ID
-      const dimensions = await getVideoDimensions({videoId});
-      setVideoDimensions(dimensions);
+          // Get video dimensions using the actual video ID and enhanced module access
+          const dimensions = await videoScreenshotPlugin.getVideoDimensions(
+            videoId,
+          );
+          setVideoDimensions(dimensions);
+        } catch (error) {
+          console.log(
+            'Video info retrieval failed (expected for test videos):',
+            error,
+          );
+          // Set default values for test scenarios
+          setVideoSupported(true);
+          setVideoDimensions({width: 1920, height: 1080});
+        }
+      }
     } catch (error) {
       console.error('Failed to get video info:', error);
       // Fall back to using the original ID
       setActualVideoId(currentVideo.id);
+      setVideoSupported(true);
+      setVideoDimensions({width: 1920, height: 1080});
     }
   }, [currentVideo.id]);
 
@@ -89,15 +274,50 @@ function App(): React.JSX.Element {
     try {
       setIsLoading(true);
       const videoId = actualVideoId || currentVideo.id;
-      const result = await captureScreenshot(
-        {videoId},
-        {
+
+      console.log('🔍 Debug: Starting screenshot capture...');
+      console.log('🔍 Debug: VideoId:', videoId);
+
+      // Use robust module access
+      const videoScreenshotPlugin = getVideoScreenshotPlugin();
+      console.log(
+        '🔍 Debug: Enhanced module access result:',
+        !!videoScreenshotPlugin,
+      );
+
+      // Try the package function first, fall back to native module
+      let result;
+      try {
+        result = await captureScreenshot(
+          {videoId},
+          {
+            format: 'jpeg',
+            quality: 0.8,
+            maxWidth: 1920,
+            includeTimestamp: true,
+          },
+        );
+      } catch (packageError) {
+        console.log(
+          'Package function failed, trying native module:',
+          packageError,
+        );
+
+        // Check if native module is available before calling
+        if (!videoScreenshotPlugin) {
+          throw new Error(
+            'VideoScreenshotPlugin native module is not available. Please restart the app.',
+          );
+        }
+
+        // Fall back to native module using robust access
+        result = await videoScreenshotPlugin.captureScreenshot(videoId, {
           format: 'jpeg',
           quality: 0.8,
           maxWidth: 1920,
           includeTimestamp: true,
-        },
-      );
+        });
+      }
 
       setScreenshot(`data:image/jpeg;base64,${result.base64}`);
       Alert.alert(
@@ -108,6 +328,7 @@ function App(): React.JSX.Element {
         [{text: 'OK'}],
       );
     } catch (error) {
+      console.error('Screenshot capture failed:', error);
       Alert.alert('Error', `Failed to capture screenshot: ${error}`);
     } finally {
       setIsLoading(false);
@@ -123,11 +344,41 @@ function App(): React.JSX.Element {
       const filePath = `${documentsPath}/${fileName}`;
       const videoId = actualVideoId || currentVideo.id;
 
-      const result = await saveScreenshotToPath({videoId}, filePath, {
-        format: 'jpeg',
-        quality: 1.0,
-        includeTimestamp: true,
-      });
+      // Use robust module access
+      const videoScreenshotPlugin = getVideoScreenshotPlugin();
+
+      // Try the package function first, fall back to native module
+      let result;
+      try {
+        result = await saveScreenshotToPath({videoId}, filePath, {
+          format: 'jpeg',
+          quality: 1.0,
+          includeTimestamp: true,
+        });
+      } catch (packageError) {
+        console.log(
+          'Package saveScreenshotToPath failed, trying native module:',
+          packageError,
+        );
+
+        // Check if native module is available before calling
+        if (!videoScreenshotPlugin) {
+          throw new Error(
+            'VideoScreenshotPlugin native module is not available. Please restart the app.',
+          );
+        }
+
+        // Fall back to native module using robust access
+        result = await videoScreenshotPlugin.saveScreenshotToPath(
+          videoId,
+          filePath,
+          {
+            format: 'jpeg',
+            quality: 1.0,
+            includeTimestamp: true,
+          },
+        );
+      }
 
       Alert.alert(
         'Saved to Documents! 📁',
@@ -147,14 +398,40 @@ function App(): React.JSX.Element {
       setIsLoading(true);
       const videoId = actualVideoId || currentVideo.id;
 
-      const result = await saveScreenshotToLibrary(
-        {videoId},
-        {
+      // Use robust module access
+      const videoScreenshotPlugin = getVideoScreenshotPlugin();
+
+      // Try the package function first, fall back to native module
+      let result;
+      try {
+        result = await saveScreenshotToLibrary(
+          {videoId},
+          {
+            format: 'jpeg',
+            quality: 1.0,
+            includeTimestamp: true,
+          },
+        );
+      } catch (packageError) {
+        console.log(
+          'Package saveScreenshotToLibrary failed, trying native module:',
+          packageError,
+        );
+
+        // Check if native module is available before calling
+        if (!videoScreenshotPlugin) {
+          throw new Error(
+            'VideoScreenshotPlugin native module is not available. Please restart the app.',
+          );
+        }
+
+        // Fall back to native module using robust access
+        result = await videoScreenshotPlugin.saveScreenshotToLibrary(videoId, {
           format: 'jpeg',
           quality: 1.0,
           includeTimestamp: true,
-        },
-      );
+        });
+      }
 
       Alert.alert(
         'Saved to Photo Library! 📷',
