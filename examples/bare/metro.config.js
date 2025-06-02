@@ -20,7 +20,10 @@ const config = {
   ],
   resolver: {
     alias: {
-      'react-native-video-screenshot-plugin': path.resolve(root, 'lib'),
+      'react-native-video-screenshot-plugin': path.resolve(
+        root,
+        'src/index.tsx',
+      ),
     },
     // Include the plugin's node_modules
     nodeModulesPaths: [

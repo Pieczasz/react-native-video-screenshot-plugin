@@ -4,7 +4,7 @@ import {
   saveScreenshotToPath,
   isScreenshotSupported,
   getVideoDimensions,
-} from '../index';
+} from '../index.tsx';
 
 // Mock the native module
 jest.mock('react-native', () => ({

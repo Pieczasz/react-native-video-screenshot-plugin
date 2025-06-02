@@ -1,5 +1,4 @@
 import { NativeModules, Platform } from 'react-native';
-import NativeVideoScreenshotPlugin from './NativeVideoScreenshotPlugin';
 
 const LINKING_ERROR =
   "The package 'react-native-video-screenshot-plugin' doesn't seem to be linked. Make sure: \n\n" +
@@ -7,50 +6,17 @@ const LINKING_ERROR =
   '- You rebuilt the app after installing the package\n' +
   '- You are not using Expo Go\n';
 
-// Try to get the native module with multiple fallback strategies
-function getNativeModule() {
-  // Strategy 1: Try TurboModule (New Architecture)
-  try {
-    return NativeVideoScreenshotPlugin;
-  } catch (turboError) {
-    console.log('📱 TurboModule not available, trying legacy module...');
-
-    // Strategy 2: Try Legacy NativeModules
-    const legacyModule = NativeModules.VideoScreenshotPlugin;
-    if (legacyModule) {
-      console.log('📱 Using legacy NativeModules bridge');
-      return legacyModule;
-    }
-
-    // Strategy 3: Try alternative naming
-    const altModule = NativeModules.RNVideoScreenshotPlugin;
-    if (altModule) {
-      console.log('📱 Using alternative module name');
-      return altModule;
-    }
-
-    console.error('❌ No native module found. TurboModule error:', turboError);
-    throw new Error(LINKING_ERROR);
-  }
-}
-
-// Get the native module instance
-let VideoScreenshotPlugin: any;
-try {
-  VideoScreenshotPlugin = getNativeModule();
-  console.log('✅ Native module loaded successfully');
-} catch (error) {
-  console.error('❌ Failed to load native module:', error);
-  // Create a proxy that throws errors for better debugging
-  VideoScreenshotPlugin = new Proxy(
-    {},
-    {
-      get() {
-        throw new Error(LINKING_ERROR);
-      },
-    }
-  );
-}
+// Get the native module directly since both iOS and Android use the old bridge pattern
+const VideoScreenshotPlugin = NativeModules.VideoScreenshotPlugin
+  ? NativeModules.VideoScreenshotPlugin
+  : new Proxy(
+      {},
+      {
+        get() {
+          throw new Error(LINKING_ERROR);
+        },
+      }
+    );
 
 export interface ScreenshotOptions {
   /**
