@@ -1,0 +1,582 @@
+/*
+ * React Native Video Screenshot Plugin - Android Build Configuration
+ * 
+ * This build script configures the Android module for the video screenshot plugin.
+ * It's designed to integrate seamlessly with react-native-video and provide
+ * optimal performance for video frame extraction and screenshot operations.
+ * 
+ * Key Dependencies:
+ * - react-native-video: Core video playback functionality
+ * - Media3/ExoPlayer: Advanced video player capabilities
+ * - Kotlin Coroutines: Asynchronous screenshot processing
+ * - AndroidX Media: Modern Android media APIs
+ */
+
+buildscript {
+    /*
+     * Buildscript Configuration
+     * 
+     * This block is evaluated before the main build script and is responsible for
+     * loading dependencies needed by the build process itself (not the final app).
+     * 
+     * Property Loading Strategy:
+     * 1. Try to load from root project's gradle.properties
+     * 2. Fall back to plugin's own gradle.properties
+     * 3. Use sensible defaults if not found
+     */
+
+    // Extract Kotlin version from project properties with fallback
+    def kotlinVersionProperty = project.properties['VideoPluginSample_kotlinVersion']
+    
+    if (kotlinVersionProperty == null) {
+        println "Warning: 'VideoPluginSample_kotlinVersion' not found in project properties. "
+        println "Falling back to default 1.8.0 "
+        println "For optimal compatibility, define this in your gradle.properties "
+        kotlinVersionProperty = "1.8.0"
+    }
+
+    repositories {
+        /*
+         * Repository Configuration
+         * 
+         * Order matters! Gradle will search repositories in the order listed.
+         * We prioritize local React Native binaries for faster builds.
+         */
+        
+        // Local Maven repository for React Native's Android binaries
+        // This significantly speeds up builds by avoiding remote downloads
+        maven {
+            url = uri("$rootDir/../node_modules/react-native/android")
+            name = "ReactNativeLocalMaven"
+        }
+        
+        // Google's repository for Android SDK components and AndroidX libraries
+        google()
+        
+        // Maven Central for most other dependencies (Kotlin, etc.)
+        mavenCentral()
+    }
+
+    dependencies {
+        /*
+         * Build Dependencies
+         * 
+         * These are tools and plugins needed during the build process.
+         * They're not included in the final APK.
+         */
+        
+        // Android Gradle Plugin - handles Android-specific build tasks
+        // Version 8.0.2 supports latest Android features and build optimizations
+        classpath "com.android.tools.build:gradle:8.0.2"
+
+        // Kotlin Gradle Plugin - enables Kotlin compilation
+        // Version must be compatible with the Kotlin stdlib used in the project
+        // noinspection DifferentKotlinGradleVersion - suppresses version mismatch warnings
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersionProperty"
+    }
+}
+
+allprojects {
+    /*
+     * All Projects Configuration
+     * 
+     * This configuration is applied to all projects in the build,
+     * including any subprojects that might be added later.
+     */
+    
+    repositories {
+        // Same repository configuration as buildscript for consistency
+        maven {
+            url = uri("$rootDir/../node_modules/react-native/android")
+            name = "ReactNativeLocalMaven"
+        }
+        google()
+        mavenCentral()
+        
+        /*
+         * Repository Priority:
+         * 1. React Native local - fastest for RN dependencies
+         * 2. Google - Android/AndroidX dependencies
+         * 3. Maven Central - everything else
+         */
+    }
+}
+
+/*
+ * External Properties Configuration
+ * 
+ * These properties are sourced from gradle.properties files and define
+ * the Android SDK and build tool versions used throughout the project.
+ * 
+ * Property Naming Convention:
+ * - All properties are prefixed with 'VideoPluginSample_' to avoid conflicts
+ * - This allows the plugin to be used in projects with different configurations
+ */
+ext {
+    // Android SDK Configuration
+    minSdkVersion = project.properties['VideoPluginSample_minSdkVersion']?.toInteger()
+    compileSdkVersion = project.properties['VideoPluginSample_compileSdkVersion']?.toInteger()
+    targetSdkVersion = project.properties['VideoPluginSample_targetSdkVersion']?.toInteger()
+    buildToolsVersion = project.properties['VideoPluginSample_buildToolsVersion']
+    
+    // Language and Framework Versions
+    kotlinVersion = project.properties['VideoPluginSample_kotlinVersion']
+    
+    // AndroidX Library Versions
+    androidxActivityVersion = project.properties['VideoPluginSample_androidxActivityVersion']
+    
+    // Media Framework Versions
+    media3Version = project.properties['VideoPluginSample_media3Version']
+
+    /*
+     * Property Validation and Default Values
+     * 
+     * We validate that critical properties are defined and provide
+     * sensible defaults for development and testing.
+     */
+    
+    // Validate critical properties
+    if (minSdkVersion == null) println "Warning: VideoPluginSample_minSdkVersion not defined in gradle.properties"
+    if (compileSdkVersion == null) println "Warning: VideoPluginSample_compileSdkVersion not defined in gradle.properties"
+    if (targetSdkVersion == null) println "Warning: VideoPluginSample_targetSdkVersion not defined in gradle.properties"
+    if (buildToolsVersion == null) println "Warning: VideoPluginSample_buildToolsVersion not defined in gradle.properties"
+    if (kotlinVersion == null) println "Warning: VideoPluginSample_kotlinVersion not defined in gradle.properties"
+    if (androidxActivityVersion == null) println "Warning: VideoPluginSample_androidxActivityVersion not defined in gradle.properties"
+    if (media3Version == null) println "Warning: VideoPluginSample_media3Version not defined in gradle.properties"
+
+    // Apply sensible defaults for development
+    minSdkVersion = minSdkVersion ?: 21
+    compileSdkVersion = compileSdkVersion ?: 33
+    targetSdkVersion = targetSdkVersion ?: 33
+    buildToolsVersion = buildToolsVersion ?: "33.0.0"
+    kotlinVersion = kotlinVersion ?: "1.8.0"
+    androidxActivityVersion = androidxActivityVersion ?: "1.9.0"
+    media3Version = media3Version ?: "1.3.1"
+    
+    /*
+     * Version Compatibility Notes:
+     * - minSdkVersion 21: Ensures broad device compatibility
+     * - compileSdkVersion 33: Access to latest Android APIs
+     * - Media3 1.3.1: Stable version compatible with most react-native-video versions
+     * - Kotlin 1.8.0: Stable version with coroutines support
+     */
+}
+
+/*
+ * New Architecture Detection
+ * 
+ * React Native's New Architecture (Fabric/TurboModules) requires additional
+ * build configuration. This function detects if it's enabled.
+ */
+def isNewArchitectureEnabled() {
+    return project.hasProperty("newArchEnabled") && project.getProperty("newArchEnabled") == "true"
+}
+
+/*
+ * Plugin Application
+ * 
+ * These plugins add Android and Kotlin support to the build.
+ * The React Native plugin is conditionally applied for New Architecture.
+ */
+
+// Core Android library plugin - provides Android-specific build tasks
+apply plugin: "com.android.library"
+
+// Kotlin Android plugin - enables Kotlin compilation for Android
+apply plugin: "kotlin-android"
+
+// React Native Gradle plugin - handles codegen for New Architecture
+if (isNewArchitectureEnabled()) {
+    apply plugin: "com.facebook.react"
+    println "New Architecture detected - applying React Native Gradle plugin"
+}
+
+/*
+ * Property Access Helper Function
+ * 
+ * This function provides a consistent way to access properties from
+ * either the root project's ext block or from gradle.properties.
+ * This promotes consistency and makes property management easier.
+ */
+def getExtOrDefault(name, defaultValue = null) {
+    // First, try to get from root project's ext properties
+    def extValue = rootProject.ext.has(name) ? rootProject.ext.get(name) : null
+    if (extValue != null) return extValue
+
+    // Second, try to get from project properties with prefix
+    def propValue = project.properties["VideoPluginSample_" + name]
+    if (propValue != null) {
+        // Try to convert to Integer if the original ext property was an Integer
+        // This maintains type consistency across the build system
+        if (rootProject.ext.has(name) && rootProject.ext.get(name) instanceof Integer) {
+            try {
+                return propValue.toInteger()
+            } catch (NumberFormatException ignored) {
+                return propValue
+            }
+        }
+        return propValue
+    }
+    
+    // Log warning if no value found and no default provided
+    if (defaultValue == null) {
+        println "Warning: Property '${name}' (or 'VideoPluginSample_${name}') not found and no default provided"
+    }
+    
+    return defaultValue
+}
+
+/*
+ * Android Gradle Plugin Version Detection
+ * 
+ * The 'namespace' DSL was introduced in AGP 7.3.0 and is required
+ * for newer Android projects. This function detects support.
+ */
+static def supportsNamespace() {
+    def parsed = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.tokenize('.')
+    def major = parsed[0].toInteger()
+    def minor = parsed[1].toInteger()
+    return (major == 7 && minor >= 3) || major >= 8
+}
+
+/*
+ * Android Configuration Block
+ * 
+ * This is the main Android configuration that defines how the
+ * Android library is built, what features it supports, and
+ * how it should be compiled.
+ */
+android {
+    /*
+     * Namespace Configuration (Modern Android)
+     * 
+     * The namespace uniquely identifies this library for the Android build system.
+     * This replaces the package attribute in AndroidManifest.xml for build purposes.
+     */
+    if (supportsNamespace()) {
+        namespace = "com.videoscreenshotplugin"
+        
+        /*
+         * Future Enhancement: Test Source Sets
+         * 
+         * Uncomment if you need custom test manifests:
+         * sourceSets {
+         *     test {
+         *         manifest.srcFile 'src/test/AndroidManifest.xml'
+         *     }
+         * }
+         */
+    }
+
+    /*
+     * Compilation Configuration
+     * 
+     * compileSdkVersion determines which Android APIs are available
+     * during compilation. Use the latest stable version for access
+     * to new features and performance improvements.
+     */
+    compileSdkVersion = getExtOrDefault("compileSdkVersion", 33)
+
+    defaultConfig {
+        /*
+         * SDK Version Configuration
+         * 
+         * - minSdkVersion: Lowest Android version supported
+         * - targetSdkVersion: Android version the app is designed for
+         * 
+         * Note: Libraries typically don't define versionCode/versionName
+         * as these are set by the consuming application.
+         */
+        minSdkVersion getExtOrDefault("minSdkVersion", 21)
+        targetSdkVersion getExtOrDefault("targetSdkVersion", 33)
+        
+        /*
+         * Version Information
+         * 
+         * For libraries, version information is usually handled by the
+         * consuming application or by the npm package version.
+         * Uncomment if needed for independent AAR publishing:
+         * 
+         * versionCode 1
+         * versionName "1.0.0"
+         */
+    }
+
+    buildTypes {
+        /*
+         * Build Type Configuration
+         * 
+         * These define different build variants with specific optimizations.
+         */
+        
+        release {
+            /*
+             * Minification Disabled for Libraries
+             * 
+             * React Native libraries should not enable minification as it can
+             * interfere with the consuming application's optimization process.
+             * The final app will handle minification during its own build.
+             */
+            minifyEnabled false
+            
+            /*
+             * ProGuard Configuration (if needed)
+             * 
+             * Uncomment if you need to provide ProGuard rules:
+             * proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+             */
+        }
+        
+        /*
+         * Debug Build Type
+         * 
+         * Usually the default debug configuration is sufficient for libraries.
+         * Uncomment if you need custom debug configuration:
+         * 
+         * debug {
+         *     debuggable true
+         *     minifyEnabled false
+         * }
+         */
+    }
+
+    lintOptions {
+        /*
+         * Lint Configuration
+         * 
+         * Controls Android Lint behavior during the build process.
+         */
+        
+        // Set to false for development, true for CI/CD environments
+        abortOnError false
+        
+        /*
+         * Gradle Compatibility Lint
+         * 
+         * Uncomment if you encounter lint warnings about Gradle compatibility
+         * that are not applicable to your use case:
+         * disable 'GradleCompatible'
+         */
+    }
+
+    compileOptions {
+        /*
+         * Java Language Compatibility
+         * 
+         * Java 17 is recommended for modern Android development as it provides:
+         * - Better performance
+         * - Enhanced language features
+         * - Improved build times
+         * 
+         * Ensure your project's Java version is compatible.
+         */
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        /*
+         * Kotlin JVM Target
+         * 
+         * Must match the Java compatibility version for proper interoperability.
+         * Kotlin 17 target provides access to Java 17 language features.
+         */
+        jvmTarget = "17"
+        
+        /*
+         * Kotlin Compiler Options
+         * 
+         * Additional options can be configured here:
+         * freeCompilerArgs += ['-Xjvm-default=all']
+         * allWarningsAsErrors = false
+         */
+    }
+
+    /*
+     * Packaging Options
+     * 
+     * Configure how the library is packaged. Uncomment if you encounter
+     * duplicate file issues or need to exclude certain files:
+     * 
+     * packagingOptions {
+     *     pickFirst 'lib/x86/libc++_shared.so'
+     *     pickFirst 'lib/x86_64/libc++_shared.so'
+     *     pickFirst 'lib/armeabi-v7a/libc++_shared.so'
+     *     pickFirst 'lib/arm64-v8a/libc++_shared.so'
+     *     exclude 'META-INF/DEPENDENCIES'
+     *     exclude 'META-INF/LICENSE'
+     *     exclude 'META-INF/LICENSE.txt'
+     *     exclude 'META-INF/NOTICE'
+     *     exclude 'META-INF/NOTICE.txt'
+     * }
+     */
+}
+
+/*
+ * Dependencies Configuration
+ * 
+ * This section defines all the libraries and modules that this plugin depends on.
+ * Dependencies are carefully chosen for compatibility and performance.
+ */
+
+// Helper variables for consistent version management
+def currentKotlinVersion = getExtOrDefault("kotlinVersion", "1.8.0")
+def currentMedia3Version = getExtOrDefault("media3Version", "1.3.1")
+
+dependencies {
+    /*
+     * React Native Core Dependency
+     * 
+     * This provides the fundamental React Native bridge functionality.
+     * For RN >= 0.71, the React Native Gradle Plugin may replace this
+     * with a versioned dependency like 'com.facebook.react:react-android:$version'.
+     */
+    implementation 'com.facebook.react:react-native:0.20.1'
+    
+    /*
+     * Kotlin Standard Library
+     * 
+     * Provides core Kotlin functionality. Version should match the
+     * Kotlin compiler version used in the project.
+     */
+    //noinspection GradleDependency - we want to use the version from gradle.properties
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$currentKotlinVersion"
+
+    /*
+     * Kotlin Coroutines for Android
+     * 
+     * Enables asynchronous programming with coroutines, essential for
+     * non-blocking screenshot operations. Version 1.7.3 provides:
+     * - Stable coroutine APIs
+     * - Android-specific dispatchers
+     * - Excellent performance
+     */
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+
+    /*
+     * Media3 Dependencies
+     * 
+     * Media3 is the successor to ExoPlayer and provides advanced video
+     * playback capabilities. We support both building from source
+     * and using prebuilt AARs for flexibility.
+     */
+    
+    // Check if we should build Media3 from source (advanced use case)
+    def media3_buildFromSource = getExtOrDefault('buildFromMedia3Source', 'false').toBoolean()
+
+    if (media3_buildFromSource) {
+        /*
+         * Building Media3 from Source
+         * 
+         * This is an advanced configuration for teams that need to modify
+         * Media3 source code. Requires:
+         * 1. Media3 source code in your project
+         * 2. Proper project configuration in settings.gradle
+         * 3. Additional build time
+         * 
+         * Most projects should use the prebuilt AARs below.
+         */
+        println "Warning: Building Media3 from source is enabled."
+        println "         Ensure Media3 projects are properly configured in settings.gradle"
+        println "         This significantly increases build time."
+        
+        /*
+         * Uncomment these lines if you have Media3 source projects:
+         * implementation(project(":media-lib-exoplayer"))
+         * implementation(project(":media-lib-exoplayer-dash"))
+         * implementation(project(":media-lib-ui"))
+         * implementation(project(":media-lib-common"))
+         */
+    } else {
+        /*
+         * Prebuilt Media3 Dependencies (Recommended)
+         * 
+         * These provide all the functionality needed for video playback
+         * and frame extraction without requiring source code builds.
+         */
+        
+        // Core ExoPlayer functionality
+        implementation "androidx.media3:media3-exoplayer:$currentMedia3Version"
+        
+        // DASH video format support (Dynamic Adaptive Streaming over HTTP)
+        implementation "androidx.media3:media3-exoplayer-dash:$currentMedia3Version"
+        
+        // UI components for video playback (if needed)
+        implementation "androidx.media3:media3-ui:$currentMedia3Version"
+        
+        // Common Media3 utilities and base classes
+        implementation "androidx.media3:media3-common:$currentMedia3Version"
+        
+        /*
+         * Additional Media3 Modules (uncomment if needed):
+         * 
+         * // HLS support
+         * implementation "androidx.media3:media3-exoplayer-hls:$currentMedia3Version"
+         * 
+         * // Smooth Streaming support
+         * implementation "androidx.media3:media3-exoplayer-smoothstreaming:$currentMedia3Version"
+         * 
+         * // RTSP support
+         * implementation "androidx.media3:media3-exoplayer-rtsp:$currentMedia3Version"
+         * 
+         * // Media session support for background playback
+         * implementation "androidx.media3:media3-session:$currentMedia3Version"
+         * 
+         * // Cast extension for Chromecast support
+         * implementation "androidx.media3:media3-cast:$currentMedia3Version"
+         */
+    }
+
+    /*
+     * React Native Video Dependency
+     * 
+     * This is the core video playback library that our plugin extends.
+     * The project dependency assumes react-native-video is included as
+     * a project in settings.gradle (which is the standard setup).
+     */
+    implementation project(':react-native-video')
+
+    /*
+     * Additional Dependencies
+     * 
+     * While creating your plugin, add other dependencies your plugin needs here. Common examples:
+     * 
+     * // AndroidX AppCompat for backward compatibility
+     * implementation "androidx.appcompat:appcompat:1.6.1"
+     * 
+     * // AndroidX Core KTX for Kotlin extensions
+     * implementation "androidx.core:core-ktx:1.12.0"
+     * 
+     * // AndroidX Activity KTX for modern activity handling
+     * implementation "androidx.activity:activity-ktx:$androidxActivityVersion"
+     * 
+     * // Image loading library
+     * implementation "com.github.bumptech.glide:glide:4.15.1"
+     * 
+     * // JSON parsing
+     * implementation "com.google.code.gson:gson:2.10.1"
+     * 
+     * // HTTP client
+     * implementation "com.squareup.okhttp3:okhttp:4.12.0"
+     */
+}
+
+/*
+ * Build Script Summary
+ * 
+ * This build script provides:
+ * 1. Comprehensive dependency management
+ * 2. Flexible property configuration
+ * 3. Modern Android build features
+ * 4. Kotlin and coroutines support
+ * 5. Media3/ExoPlayer integration
+ * 6. React Native compatibility
+ * 7. New Architecture support
+ * 8. Extensive documentation
+ * 
+ * For troubleshooting, check:
+ * - gradle.properties for version definitions
+ * - settings.gradle for project inclusions
+ * - Android SDK installation and licenses
+ * - react-native-video installation
+ */

@@ -1,0 +1,7 @@
+lib/
+node_modules/
+android/
+ios/
+jest.setup.js
+*.config.js
+*.setup.js 
